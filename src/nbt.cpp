@@ -138,9 +138,9 @@ private:
       result = Tag::doubleTag(std::move(name), number<double>());
       break;
     case Type::ByteArray: {
-      const auto n = count();
-      require(n);
-      ByteArray values(n);
+      const auto ncount = count();
+      require(ncount);
+      ByteArray values(ncount);
       for (auto &value : values) {
         value = number<Byte>();
       }
@@ -151,9 +151,9 @@ private:
       result = Tag::string(std::move(name), string());
       break;
     case Type::IntArray: {
-      const auto n = count();
-      IntArray values(n);
-      if (n > remaining() / 4) {
+      const auto ncount = count();
+      IntArray values(ncount);
+      if (ncount > remaining() / 4) {
         fail("truncated int array");
       }
       for (auto &value : values) {
@@ -163,9 +163,9 @@ private:
       break;
     }
     case Type::LongArray: {
-      const auto n = count();
-      LongArray values(n);
-      if (n > remaining() / 8) {
+      const auto ncount = count();
+      LongArray values(ncount);
+      if (ncount > remaining() / 8) {
         fail("truncated long array");
       }
       for (auto &value : values) {
@@ -176,13 +176,13 @@ private:
     }
     case Type::List: {
       const Type element = type();
-      const auto n = count();
-      if (element == Type::End && n != 0) {
+      const auto ncount = count();
+      if (element == Type::End && ncount != 0) {
         fail("non-empty TAG_List has TAG_End element type");
       }
       std::vector<Tag> values;
-      values.reserve(n);
-      for (std::size_t i = 0; i < n; ++i) {
+      values.reserve(ncount);
+      for (std::size_t i = 0; i < ncount; ++i) {
         const auto childBegin = pos_;
         const auto child = push(TokenKind::Tag, element, childBegin, parent);
         values.push_back(payload(element, {}, child, depth + 1));
@@ -190,7 +190,7 @@ private:
       }
       result = Tag::list(std::move(name), element, std::move(values));
       if (parent && (tokens_ != nullptr)) {
-        (*tokens_)[*parent].count = static_cast<std::uint32_t>(n);
+        (*tokens_)[*parent].count = static_cast<std::uint32_t>(ncount);
         (*tokens_)[*parent].elementType = element;
       }
       break;
@@ -329,9 +329,9 @@ private:
   }
 
   void string() {
-    const auto n = number<std::uint16_t>();
-    require(n);
-    pos_ += n;
+    const auto ncount = number<std::uint16_t>();
+    require(ncount);
+    pos_ += ncount;
   }
 
   void named(std::uint32_t parent, std::size_t depth) {
@@ -372,35 +372,35 @@ private:
       string();
       break;
     case Type::ByteArray: {
-      const auto n = count();
-      skip(n);
+      const auto ncount = count();
+      skip(ncount);
       break;
     }
     case Type::IntArray: {
-      const auto n = count();
-      if (n > remaining() / 4) {
+      const auto ncount = count();
+      if (ncount > remaining() / 4) {
         fail("truncated int array");
       }
-      skip(n * 4);
+      skip(ncount * 4);
       break;
     }
     case Type::LongArray: {
-      const auto n = count();
-      if (n > remaining() / 8) {
+      const auto ncount = count();
+      if (ncount > remaining() / 8) {
         fail("truncated long array");
       }
-      skip(n * 8);
+      skip(ncount * 8);
       break;
     }
     case Type::List: {
       const auto element = type();
-      const auto n = count();
-      if (element == Type::End && (n != 0u)) {
+      const auto ncount = count();
+      if (element == Type::End && (ncount != 0u)) {
         fail("non-empty TAG_List has TAG_End element type");
       }
-      token(parent).count = static_cast<std::uint32_t>(n);
+      token(parent).count = static_cast<std::uint32_t>(ncount);
       token(parent).elementType = element;
-      for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t i = 0; i < ncount; ++i) {
         const auto child = beginToken(TokenKind::Tag, element, pos_, parent);
         payload(element, child, depth + 1);
         finish(child);
@@ -408,19 +408,19 @@ private:
       break;
     }
     case Type::Compound: {
-      std::size_t n{};
+      std::size_t ncount{};
       while (true) {
         require(1);
         if (std::to_integer<std::uint8_t>(data_[pos_]) == 0) {
           ++pos_;
           break;
         }
-        if (++n > options_.maxElements) {
+        if (++ncount > options_.maxElements) {
           fail("element limit exceeded");
         }
         named(parent, depth + 1);
       }
-      token(parent).count = static_cast<std::uint32_t>(n);
+      token(parent).count = static_cast<std::uint32_t>(ncount);
       break;
     }
     case Type::End:
@@ -430,13 +430,13 @@ private:
   }
 
   Token doneToken(TokenKind kind, Type type, std::size_t begin, std::size_t end, std::uint32_t parent) {
-    Token t;
-    t.kind = kind;
-    t.type = type;
-    t.begin = static_cast<std::uint32_t>(begin);
-    t.end = t.subtreeEnd = static_cast<std::uint32_t>(end);
-    t.parent = parent;
-    return t;
+    Token tkn;
+    tkn.kind = kind;
+    tkn.type = type;
+    tkn.begin = static_cast<std::uint32_t>(begin);
+    tkn.end = tkn.subtreeEnd = static_cast<std::uint32_t>(end);
+    tkn.parent = parent;
+    return tkn;
   }
 
   std::uint32_t beginToken(TokenKind kind, Type type, std::size_t begin, std::uint32_t parent) {
@@ -446,9 +446,9 @@ private:
   }
 
   void finish(std::uint32_t index) {
-    auto &t = token(index);
-    t.end = static_cast<std::uint32_t>(pos_);
-    t.subtreeEnd = static_cast<std::uint32_t>(used_);
+    auto &tkn = token(index);
+    tkn.end = static_cast<std::uint32_t>(pos_);
+    tkn.subtreeEnd = static_cast<std::uint32_t>(used_);
   }
 
   void emit(Token value) {
@@ -609,10 +609,10 @@ private:
       number(std::get<double>(tag.value));
       break;
     case Type::ByteArray: {
-      const auto &v = std::get<ByteArray>(tag.value);
-      length(v.size());
-      for (auto x : v) {
-        number(x);
+      const auto &vchar = std::get<ByteArray>(tag.value);
+      length(vchar.size());
+      for (auto xnumber : vchar) {
+        number(xnumber);
       }
       break;
     }
@@ -620,31 +620,31 @@ private:
       string(std::get<std::string>(tag.value));
       break;
     case Type::IntArray: {
-      const auto &v = std::get<IntArray>(tag.value);
-      length(v.size());
-      for (auto x : v) {
-        number(x);
+      const auto &vint = std::get<IntArray>(tag.value);
+      length(vint.size());
+      for (auto xint : vint) {
+        number(xint);
       }
       break;
     }
     case Type::LongArray: {
-      const auto &v = std::get<LongArray>(tag.value);
-      length(v.size());
-      for (auto x : v) {
-        number(x);
+      const auto &vll = std::get<LongArray>(tag.value);
+      length(vll.size());
+      for (auto xll : vll) {
+        number(xll);
       }
       break;
     }
     case Type::List: {
-      const auto &v = std::get<List>(tag.value).values;
-      for (const auto &child : v) {
+      const auto &vtags = std::get<List>(tag.value).values;
+      for (const auto &child : vtags) {
         if (child.type != tag.elementType || !child.name.empty()) {
           throw std::invalid_argument("invalid heterogeneous or named TAG_List element");
         }
       }
       number<std::uint8_t>(static_cast<std::uint8_t>(tag.elementType));
-      length(v.size());
-      for (const auto &child : v) {
+      length(vtags.size());
+      for (const auto &child : vtags) {
         payload(child);
       }
       break;
@@ -678,19 +678,19 @@ bool container(const Tag &tag) {
 std::string escape(std::string_view text) {
   std::ostringstream out;
   out << '"';
-  for (unsigned char c : text) {
-    if (c == '"' || c == '\\') {
-      out << '\\' << c;
-    } else if (c == '\n') {
+  for (unsigned char ctx : text) {
+    if (ctx == '"' || ctx == '\\') {
+      out << '\\' << ctx;
+    } else if (ctx == '\n') {
       out << "\\n";
-    } else if (c == '\r') {
+    } else if (ctx == '\r') {
       out << "\\r";
-    } else if (c == '\t') {
+    } else if (ctx == '\t') {
       out << "\\t";
-    } else if (c < 0x20) {
-      out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+    } else if (ctx < 0x20) {
+      out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(ctx);
     } else {
-      out << c;
+      out << ctx;
     }
   }
   return out.str() + '"';
@@ -700,9 +700,9 @@ void snbt(const Tag &tag, std::ostringstream &out, bool pretty, std::size_t dept
   if (named && !tag.name.empty()) {
     out << escape(tag.name) << ':' << (pretty ? " " : "");
   }
-  const auto indent = [&](std::size_t d) {
+  const auto indent = [&](std::size_t depth) {
     if (pretty) {
-      out << '\n' << std::string(d * 2, ' ');
+      out << '\n' << std::string(depth * 2, ' ');
     }
   };
   switch (tag.type) {
@@ -729,53 +729,53 @@ void snbt(const Tag &tag, std::ostringstream &out, bool pretty, std::size_t dept
     break;
   case Type::ByteArray: {
     out << "[B;";
-    const auto &v = tag.as<ByteArray>();
-    for (size_t i = 0; i < v.size(); ++i) {
+    const auto &vbyte = tag.as<ByteArray>();
+    for (size_t i = 0; i < vbyte.size(); ++i) {
       if (i != 0u) {
         out << ',';
       }
-      out << +v[i] << 'b';
+      out << +vbyte[i] << 'b';
     }
     out << ']';
     break;
   }
   case Type::IntArray: {
     out << "[I;";
-    const auto &v = tag.as<IntArray>();
-    for (size_t i = 0; i < v.size(); ++i) {
+    const auto &vint = tag.as<IntArray>();
+    for (size_t i = 0; i < vint.size(); ++i) {
       if (i != 0u) {
         out << ',';
       }
-      out << v[i];
+      out << vint[i];
     }
     out << ']';
     break;
   }
   case Type::LongArray: {
     out << "[L;";
-    const auto &v = tag.as<LongArray>();
-    for (size_t i = 0; i < v.size(); ++i) {
+    const auto &vll = tag.as<LongArray>();
+    for (size_t i = 0; i < vll.size(); ++i) {
       if (i != 0u) {
         out << ',';
       }
-      out << v[i] << 'L';
+      out << vll[i] << 'L';
     }
     out << ']';
     break;
   }
   case Type::List: {
     out << '[';
-    const auto &v = tag.as<List>().values;
-    for (size_t i = 0; i < v.size(); ++i) {
+    const auto &vtags = tag.as<List>().values;
+    for (size_t i = 0; i < vtags.size(); ++i) {
       if (i != 0u) {
         out << ',';
       }
       if (pretty) {
         indent(depth + 1);
       }
-      snbt(v[i], out, pretty, depth + 1, false);
+      snbt(vtags[i], out, pretty, depth + 1, false);
     }
-    if (pretty && !v.empty()) {
+    if (pretty && !vtags.empty()) {
       indent(depth);
     }
     out << ']';
@@ -783,17 +783,17 @@ void snbt(const Tag &tag, std::ostringstream &out, bool pretty, std::size_t dept
   }
   case Type::Compound: {
     out << '{';
-    const auto &v = tag.as<Compound>().values;
-    for (size_t i = 0; i < v.size(); ++i) {
+    const auto &vtags = tag.as<Compound>().values;
+    for (size_t i = 0; i < vtags.size(); ++i) {
       if (i != 0u) {
         out << ',';
       }
       if (pretty) {
         indent(depth + 1);
       }
-      snbt(v[i], out, pretty, depth + 1, true);
+      snbt(vtags[i], out, pretty, depth + 1, true);
     }
-    if (pretty && !v.empty()) {
+    if (pretty && !vtags.empty()) {
       indent(depth);
     }
     out << '}';
@@ -952,11 +952,11 @@ private:
         return Tag::byteArray(std::move(name), {});
       }
       while (true) {
-        auto t = scalar({}, bare());
-        if (t.type != Type::Byte) {
+        auto tagVar = scalar({}, bare());
+        if (tagVar.type != Type::Byte) {
           fail("TAG_Byte_Array requires byte values");
         }
-        out.push_back(t.as<Byte>());
+        out.push_back(tagVar.as<Byte>());
         space();
         if (accept(']')) {
           break;
@@ -971,11 +971,11 @@ private:
         return Tag::intArray(std::move(name), {});
       }
       while (true) {
-        auto t = scalar({}, bare());
-        if (t.type != Type::Int) {
+        auto tVar = scalar({}, bare());
+        if (tVar.type != Type::Int) {
           fail("TAG_Int_Array requires int values");
         }
-        out.push_back(t.as<std::int32_t>());
+        out.push_back(tVar.as<std::int32_t>());
         space();
         if (accept(']')) {
           break;
@@ -989,11 +989,11 @@ private:
       return Tag::longArray(std::move(name), {});
     }
     while (true) {
-      auto t = scalar({}, bare());
-      if (t.type != Type::Long) {
+      auto tVar = scalar({}, bare());
+      if (tVar.type != Type::Long) {
         fail("TAG_Long_Array requires long values");
       }
-      out.push_back(t.as<std::int64_t>());
+      out.push_back(tVar.as<std::int64_t>());
       space();
       if (accept(']')) {
         break;
@@ -1061,22 +1061,22 @@ private:
     char quote = input_[pos_++];
     std::string out;
     while (pos_ < input_.size()) {
-      char c = input_[pos_++];
-      if (c == quote) {
+      char cinput = input_[pos_++];
+      if (cinput == quote) {
         return out;
       }
-      if (c == '\\') {
+      if (cinput == '\\') {
         if (pos_ >= input_.size()) {
           fail("unterminated escape");
         }
-        char e = input_[pos_++];
-        if (e == quote || e == '\\') {
-          out.push_back(e);
+        char einput = input_[pos_++];
+        if (einput == quote || einput == '\\') {
+          out.push_back(einput);
         } else {
           fail("invalid SNBT escape");
         }
       } else {
-        out.push_back(c);
+        out.push_back(cinput);
       }
     }
     fail("unterminated string");
@@ -1114,18 +1114,18 @@ private:
     return pos_ < input_.size() ? input_[pos_] : '\0';
   }
 
-  bool accept(char c) {
+  bool accept(char chr) {
     space();
-    if (pos_ < input_.size() && input_[pos_] == c) {
+    if (pos_ < input_.size() && input_[pos_] == chr) {
       ++pos_;
       return true;
     }
     return false;
   }
 
-  void take(char c) {
-    if (!accept(c)) {
-      fail(std::string("expected '") + c + "'");
+  void take(char cArg) {
+    if (!accept(cArg)) {
+      fail(std::string("expected '") + cArg + "'");
     }
   }
 
@@ -1140,7 +1140,7 @@ private:
 
 } // namespace
 
-Error::Error(std::string message, std::size_t offset) : std::runtime_error(std::move(message)), offset_(offset) {
+Error::Error(std::string message, std::size_t offset) : std::runtime_error(message), offset_(offset) {
 }
 
 std::size_t Error::offset() const noexcept {
@@ -1278,55 +1278,55 @@ std::int64_t LongArrayView::operator[](std::size_t index) const {
   return static_cast<std::int64_t>(detail::readUnsigned(source_, begin_ + static_cast<std::uint32_t>(index * 8), 8));
 }
 
-Tag::Tag(Type t, std::string n, Value v, Type e) : type(t), name(std::move(n)), value(std::move(v)), elementType(e) {
+Tag::Tag(Type type, std::string name, Value value, Type elementType) : type(type), name(std::move(name)), value(std::move(value)), elementType(elementType) {
 }
 
-Tag Tag::byte(std::string n, Byte v) {
-  return {Type::Byte, std::move(n), v};
+Tag Tag::byte(std::string name, Byte value) {
+  return {Type::Byte, std::move(name), value};
 }
 
-Tag Tag::shortTag(std::string n, std::int16_t v) {
-  return {Type::Short, std::move(n), v};
+Tag Tag::shortTag(std::string name, std::int16_t value) {
+  return {Type::Short, std::move(name), value};
 }
 
-Tag Tag::intTag(std::string n, std::int32_t v) {
-  return {Type::Int, std::move(n), v};
+Tag Tag::intTag(std::string name, std::int32_t value) {
+  return {Type::Int, std::move(name), value};
 }
 
-Tag Tag::longTag(std::string n, std::int64_t v) {
-  return {Type::Long, std::move(n), v};
+Tag Tag::longTag(std::string name, std::int64_t value) {
+  return {Type::Long, std::move(name), value};
 }
 
-Tag Tag::floatTag(std::string n, float v) {
-  return {Type::Float, std::move(n), v};
+Tag Tag::floatTag(std::string name, float value) {
+  return {Type::Float, std::move(name), value};
 }
 
-Tag Tag::doubleTag(std::string n, double v) {
-  return {Type::Double, std::move(n), v};
+Tag Tag::doubleTag(std::string name, double value) {
+  return {Type::Double, std::move(name), value};
 }
 
-Tag Tag::byteArray(std::string n, ByteArray v) {
-  return {Type::ByteArray, std::move(n), std::move(v)};
+Tag Tag::byteArray(std::string name, ByteArray value) {
+  return {Type::ByteArray, std::move(name), std::move(value)};
 }
 
-Tag Tag::string(std::string n, std::string v) {
-  return {Type::String, std::move(n), std::move(v)};
+Tag Tag::string(std::string name, std::string value) {
+  return {Type::String, std::move(name), std::move(value)};
 }
 
-Tag Tag::list(std::string n, Type e, std::vector<Tag> v) {
-  return {Type::List, std::move(n), List{std::move(v)}, e};
+Tag Tag::list(std::string name, Type elementType, std::vector<Tag> value) {
+  return {Type::List, std::move(name), List{std::move(value)}, elementType};
 }
 
-Tag Tag::compound(std::string n, std::vector<Tag> v) {
-  return {Type::Compound, std::move(n), Compound{std::move(v)}};
+Tag Tag::compound(std::string name, std::vector<Tag> value) {
+  return {Type::Compound, std::move(name), Compound{std::move(value)}};
 }
 
-Tag Tag::intArray(std::string n, IntArray v) {
-  return {Type::IntArray, std::move(n), std::move(v)};
+Tag Tag::intArray(std::string name, IntArray value) {
+  return {Type::IntArray, std::move(name), std::move(value)};
 }
 
-Tag Tag::longArray(std::string n, LongArray v) {
-  return {Type::LongArray, std::move(n), std::move(v)};
+Tag Tag::longArray(std::string name, LongArray value) {
+  return {Type::LongArray, std::move(name), std::move(value)};
 }
 
 TokenizedDocument tokenize(std::span<const std::byte> input, const ParseOptions &options) {
@@ -1404,53 +1404,53 @@ Buffer serialize(const Tag &root, BinaryFormat format) {
   return Writer().run(root, format == BinaryFormat::File);
 }
 
-Buffer compress(std::span<const std::byte> input, Compression c) {
-  if (c == Compression::None) {
+Buffer compress(std::span<const std::byte> input, Compression comp) {
+  if (comp == Compression::None) {
     return {input.begin(), input.end()};
   }
-  if (c == Compression::Auto) {
+  if (comp == Compression::Auto) {
     throw std::invalid_argument("Auto is invalid for compression");
   }
-  return zcode(input, c == Compression::Gzip ? 31 : 15, true);
+  return zcode(input, comp == Compression::Gzip ? 31 : 15, true);
 }
 
-Buffer decompress(std::span<const std::byte> input, Compression c) {
-  if (c == Compression::None) {
+Buffer decompress(std::span<const std::byte> input, Compression comp) {
+  if (comp == Compression::None) {
     return {input.begin(), input.end()};
   }
-  return zcode(input, c == Compression::Gzip ? 31 : c == Compression::Zlib ? 15 : 47, false);
+  return zcode(input, comp == Compression::Gzip ? 31 : comp == Compression::Zlib ? 15 : 47, false);
 }
 
-Tag load(const std::filesystem::path &path, Compression c, const ParseOptions &options) {
-  std::ifstream f(path, std::ios::binary | std::ios::ate);
-  if (!f) {
+Tag load(const std::filesystem::path &path, Compression comp, const ParseOptions &options) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) {
     throw std::runtime_error("cannot open NBT file");
   }
-  const auto length = f.tellg();
+  const auto length = file.tellg();
   if (length < 0) {
     throw std::runtime_error("cannot determine NBT file size");
   }
-  Buffer b(static_cast<std::size_t>(length));
-  f.seekg(0);
-  if (!b.empty() && !f.read(reinterpret_cast<char *>(b.data()), length)) {
+  Buffer buffer(static_cast<std::size_t>(length));
+  file.seekg(0);
+  if (!buffer.empty() && !file.read(reinterpret_cast<char *>(buffer.data()), length)) {
     throw std::runtime_error("cannot read NBT file");
   }
-  if (c == Compression::Auto && b.size() >= 2) {
-    auto a = std::to_integer<unsigned>(b[0]);
-    auto d = std::to_integer<unsigned>(b[1]);
-    if ((a != 0x1f || d != 0x8b) && ((a & 0x0f) != 8 || ((a << 8) + d) % 31 != 0)) {
-      c = Compression::None;
+  if (comp == Compression::Auto && buffer.size() >= 2) {
+    auto id1 = std::to_integer<unsigned>(buffer[0]);
+    auto id2 = std::to_integer<unsigned>(buffer[1]);
+    if ((id1 != 0x1f || id2 != 0x8b) && ((id1 & 0x0f) != 8 || ((id1 << 8) + id2) % 31 != 0)) {
+      comp = Compression::None;
     }
   }
-  auto raw = decompress(b, c);
+  auto raw = decompress(buffer, comp);
   return parse(raw, options);
 }
 
-void save(const std::filesystem::path &path, const Tag &root, Compression c) {
+void save(const std::filesystem::path &path, const Tag &root, Compression comp) {
   auto raw = serialize(root);
-  auto data = compress(raw, c);
-  std::ofstream f(path, std::ios::binary);
-  if (!f || !f.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()))) {
+  auto data = compress(raw, comp);
+  std::ofstream file(path, std::ios::binary);
+  if (!file || !file.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()))) {
     throw std::runtime_error("cannot write NBT file");
   }
 }
@@ -1459,13 +1459,13 @@ Tag clone(const Tag &tag) {
   return tag;
 }
 
-bool map(Tag &root, const Visitor &v) {
-  if (!v(root)) {
+bool map(Tag &root, const Visitor &visitor) {
+  if (!visitor(root)) {
     return false;
   }
   if (container(root)) {
-    for (auto &c : children(root)) {
-      if (!map(c, v)) {
+    for (auto &child : children(root)) {
+      if (!map(child, visitor)) {
         return false;
       }
     }
@@ -1473,13 +1473,13 @@ bool map(Tag &root, const Visitor &v) {
   return true;
 }
 
-bool map(const Tag &root, const ConstVisitor &v) {
-  if (!v(root)) {
+bool map(const Tag &root, const ConstVisitor &visitor) {
+  if (!visitor(root)) {
     return false;
   }
   if (container(root)) {
-    for (const auto &c : children(root)) {
-      if (!map(c, v)) {
+    for (const auto &child : children(root)) {
+      if (!map(child, visitor)) {
         return false;
       }
     }
@@ -1487,81 +1487,81 @@ bool map(const Tag &root, const ConstVisitor &v) {
   return true;
 }
 
-std::optional<Tag> filter(const Tag &root, const Predicate &p) {
-  if (!p(root)) {
+std::optional<Tag> filter(const Tag &root, const Predicate &predicate) {
+  if (!predicate(root)) {
     return std::nullopt;
   }
   Tag copy = root;
   if (container(copy)) {
-    auto &v = children(copy);
-    v.erase(std::remove_if(v.begin(),
-                           v.end(),
-                           [&](Tag &c) {
-                             auto x = filter(c, p);
-                             if (x) {
-                               c = std::move(*x);
-                             }
-                             return !x;
-                           }),
-            v.end());
+    auto &tags = children(copy);
+    tags.erase(std::remove_if(tags.begin(),
+                              tags.end(),
+                              [&](Tag &child) {
+                                auto result = filter(child, predicate);
+                                if (result) {
+                                  child = std::move(*result);
+                                }
+                                return !result;
+                              }),
+               tags.end());
   }
   return copy;
 }
 
-void filterInPlace(Tag &root, const Predicate &p) {
+void filterInPlace(Tag &root, const Predicate &predicate) {
   if (!container(root)) {
     return;
   }
-  auto &v = children(root);
-  v.erase(std::remove_if(v.begin(),
-                         v.end(),
-                         [&](Tag &c) {
-                           if (!p(c)) {
-                             return true;
-                           }
-                           filterInPlace(c, p);
-                           return false;
-                         }),
-          v.end());
+  auto &tags = children(root);
+  tags.erase(std::remove_if(tags.begin(),
+                            tags.end(),
+                            [&](Tag &child) {
+                              if (!predicate(child)) {
+                                return true;
+                              }
+                              filterInPlace(child, predicate);
+                              return false;
+                            }),
+             tags.end());
 }
 
-Tag *find(Tag &root, const Predicate &p) {
-  if (p(root)) {
+Tag *find(Tag &root, const Predicate &predicate) {
+  if (predicate(root)) {
     return &root;
   }
   if (container(root)) {
-    for (auto &c : children(root)) {
-      if (auto *r = find(c, p)) {
-        return r;
+    for (auto &child : children(root)) {
+      if (auto *found = find(child, predicate)) {
+        return found;
       }
     }
   }
   return nullptr;
 }
 
-const Tag *find(const Tag &root, const Predicate &p) {
-  if (p(root)) {
+const Tag *find(const Tag &root, const Predicate &predicate) {
+  if (predicate(root)) {
     return &root;
   }
   if (container(root)) {
-    for (const auto &c : children(root)) {
-      if (const auto *r = find(c, p)) {
-        return r;
+    for (const auto &child : children(root)) {
+      if (const auto *found = find(child, predicate)) {
+        return found;
       }
     }
   }
   return nullptr;
 }
 
-Tag *findByName(Tag &root, std::string_view n) {
-  return find(root, [&](const Tag &t) {
-    return t.name == n;
+Tag *findByName(Tag &root, std::string_view name) {
+  return find(root, [&](const Tag &tag) {
+    return tag.name == name;
   });
 }
 
-const Tag *findByName(const Tag &root, std::string_view n) {
-  return find(root, [&](const Tag &t) {
-    return t.name == n;
+const Tag *findByName(const Tag &root, std::string_view name) {
+  return find(root, [&](const Tag &tag) {
+    return tag.name == name;
   });
 }
 
@@ -1585,14 +1585,14 @@ Tag *findByPath(Tag &root, std::string_view path) {
     if (!container(*cur)) {
       return nullptr;
     }
-    auto &v = children(*cur);
-    auto it = std::find_if(v.begin(), v.end(), [&](Tag &x) {
-      return x.name == part;
+    auto &tags = children(*cur);
+    auto pos = std::find_if(tags.begin(), tags.end(), [&](Tag &tag) {
+      return tag.name == part;
     });
-    if (it == v.end()) {
+    if (pos == tags.end()) {
       return nullptr;
     }
-    cur = &*it;
+    cur = &*pos;
     if (end == std::string_view::npos) {
       break;
     }
@@ -1606,49 +1606,49 @@ const Tag *findByPath(const Tag &root, std::string_view path) {
 }
 
 std::size_t size(const Tag &root) {
-  std::size_t n = 1;
+  std::size_t total = 1;
   if (container(root)) {
-    for (const auto &c : children(root)) {
-      n += size(c);
+    for (const auto &child : children(root)) {
+      total += size(child);
     }
   }
-  return n;
+  return total;
 }
 
-bool equivalent(const Tag &a, const Tag &b, double e) {
-  if (a.type != b.type || a.name != b.name || a.elementType != b.elementType) {
+bool equivalent(const Tag &lhs, const Tag &rhs, double eps) {
+  if (lhs.type != rhs.type || lhs.name != rhs.name || lhs.elementType != rhs.elementType) {
     return false;
   }
-  if (container(a)) {
-    const auto &x = children(a);
-    const auto &y = children(b);
-    return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [&](const Tag &l, const Tag &r) {
-             return equivalent(l, r, e);
+  if (container(lhs)) {
+    const auto &lhsChildren = children(lhs);
+    const auto &rhsChildren = children(rhs);
+    return lhsChildren.size() == rhsChildren.size() && std::equal(lhsChildren.begin(), lhsChildren.end(), rhsChildren.begin(), [&](const Tag &left, const Tag &right) {
+             return equivalent(left, right, eps);
            });
   }
-  switch (a.type) {
+  switch (lhs.type) {
   case Type::End:
     return true;
   case Type::Byte:
-    return a.as<Byte>() == b.as<Byte>();
+    return lhs.as<Byte>() == rhs.as<Byte>();
   case Type::Short:
-    return a.as<std::int16_t>() == b.as<std::int16_t>();
+    return lhs.as<std::int16_t>() == rhs.as<std::int16_t>();
   case Type::Int:
-    return a.as<std::int32_t>() == b.as<std::int32_t>();
+    return lhs.as<std::int32_t>() == rhs.as<std::int32_t>();
   case Type::Long:
-    return a.as<std::int64_t>() == b.as<std::int64_t>();
+    return lhs.as<std::int64_t>() == rhs.as<std::int64_t>();
   case Type::Float:
-    return std::abs(a.as<float>() - b.as<float>()) <= e;
+    return std::abs(lhs.as<float>() - rhs.as<float>()) <= eps;
   case Type::Double:
-    return std::abs(a.as<double>() - b.as<double>()) <= e;
+    return std::abs(lhs.as<double>() - rhs.as<double>()) <= eps;
   case Type::ByteArray:
-    return a.as<ByteArray>() == b.as<ByteArray>();
+    return lhs.as<ByteArray>() == rhs.as<ByteArray>();
   case Type::String:
-    return a.as<std::string>() == b.as<std::string>();
+    return lhs.as<std::string>() == rhs.as<std::string>();
   case Type::IntArray:
-    return a.as<IntArray>() == b.as<IntArray>();
+    return lhs.as<IntArray>() == rhs.as<IntArray>();
   case Type::LongArray:
-    return a.as<LongArray>() == b.as<LongArray>();
+    return lhs.as<LongArray>() == rhs.as<LongArray>();
   case Type::List:
   case Type::Compound:
     return false;
@@ -1666,10 +1666,10 @@ std::string toSnbt(const Tag &root, bool pretty) {
   return out.str();
 }
 
-std::string_view typeName(Type t) noexcept {
+std::string_view typeName(Type type) noexcept {
   static constexpr std::string_view names[] = {"TAG_End", "TAG_Byte", "TAG_Short", "TAG_Int", "TAG_Long", "TAG_Float", "TAG_Double", "TAG_Byte_Array", "TAG_String", "TAG_List", "TAG_Compound", "TAG_Int_Array", "TAG_Long_Array"};
-  auto i = static_cast<size_t>(t);
-  return i < std::size(names) ? names[i] : "TAG_Unknown";
+  auto idx = static_cast<size_t>(type);
+  return idx < std::size(names) ? names[idx] : "TAG_Unknown";
 }
 
 Builder::Builder(std::string name) : root_(Tag::compound(std::move(name))), stack_{&root_} {
@@ -1691,15 +1691,15 @@ Builder &Builder::add(Tag tag) {
 
 Builder &Builder::beginCompound(std::string name) {
   add(Tag::compound(std::move(name)));
-  auto &v = children(*stack_.back());
-  stack_.push_back(&v.back());
+  auto &tags = children(*stack_.back());
+  stack_.push_back(&tags.back());
   return *this;
 }
 
 Builder &Builder::beginList(std::string name, Type type) {
   add(Tag::list(std::move(name), type));
-  auto &v = children(*stack_.back());
-  stack_.push_back(&v.back());
+  auto &tags = children(*stack_.back());
+  stack_.push_back(&tags.back());
   return *this;
 }
 

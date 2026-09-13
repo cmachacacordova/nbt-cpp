@@ -1,0 +1,15 @@
+---
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  modernize-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -modernize-use-trailing-return-type,
+  -readability-function-cognitive-complexity,
+  -readability-convert-member-functions-to-static
+WarningsAsErrors: ""
+HeaderFilterRegex: ".*nbt.*\\.hpp"
+FormatStyle: file

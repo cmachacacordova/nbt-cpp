@@ -350,7 +350,7 @@ NBT_CPP_API void filterInPlace(Tag &root, const Predicate &predicate);
 [[nodiscard]] NBT_CPP_API Tag *at(Tag &tag, std::size_t index);
 [[nodiscard]] NBT_CPP_API const Tag *at(const Tag &tag, std::size_t index);
 [[nodiscard]] NBT_CPP_API std::size_t size(const Tag &root);
-[[nodiscard]] NBT_CPP_API bool equivalent(const Tag &a, const Tag &b, double epsilon = 1e-6);
+[[nodiscard]] NBT_CPP_API bool equivalent(const Tag &lhs, const Tag &rhs, double eps = 1e-6);
 [[nodiscard]] NBT_CPP_API Tag parseSnbt(std::string_view input, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API std::string toSnbt(const Tag &root, bool pretty = true);
 [[nodiscard]] NBT_CPP_API std::string_view typeName(Type type) noexcept;
