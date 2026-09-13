@@ -809,3 +809,4 @@ FodyWeavers.xsd
 /build*/
 .package-test/
 .port-test/
+.port-test-static/

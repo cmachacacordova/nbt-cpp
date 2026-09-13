@@ -1,7 +1,7 @@
-#include "nbt/nbt.hpp"
-
 #include <filesystem>
 #include <iostream>
+
+#include "nbt/nbt.hpp"
 
 int main(int argc, char **argv) {
   try {

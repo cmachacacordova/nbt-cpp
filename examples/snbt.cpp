@@ -1,6 +1,6 @@
-#include "nbt/nbt.hpp"
-
 #include <iostream>
+
+#include "nbt/nbt.hpp"
 
 int main() {
   try {

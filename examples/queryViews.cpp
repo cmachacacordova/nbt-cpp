@@ -1,6 +1,6 @@
-#include "nbt/nbt.hpp"
-
 #include <iostream>
+
+#include "nbt/nbt.hpp"
 
 int main() {
   const auto binary = nbt::serialize(nbt::Tag::compound("root", {nbt::Tag::shortTag("Health", 20), nbt::Tag::string("Name", "Alex"), nbt::Tag::intArray("Position", {10, 64, -5})}));

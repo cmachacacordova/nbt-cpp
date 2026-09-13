@@ -1,14 +1,24 @@
-#include "nbt/nbt.hpp"
-
 #include <algorithm>
 #include <cassert>
 #include <iostream>
 
+#include "nbt/nbt.hpp"
+
 int main() {
   using namespace nbt;
-  Tag root = Tag::compound("root", {Tag::byte("byte", -7), Tag::shortTag("short", -300), Tag::intTag("int", 123456), Tag::longTag("long", INT64_C(0x1020304050607080)), Tag::floatTag("float", 1.25f), Tag::doubleTag("double", -4.5),
-                                    Tag::string("text", "hello"), Tag::byteArray("bytes", {-1, 0, 1}), Tag::intArray("ints", {-1, 2}), Tag::longArray("longs", {-3, 4}), Tag::list("list", Type::Int, {Tag::intTag("", 1), Tag::intTag("", 2)}),
-                                    Tag::compound("nested", {Tag::string("value", "ok")})});
+  Tag root = Tag::compound("root",
+                           {Tag::byte("byte", -7),
+                            Tag::shortTag("short", -300),
+                            Tag::intTag("int", 123456),
+                            Tag::longTag("long", INT64_C(0x1020304050607080)),
+                            Tag::floatTag("float", 1.25f),
+                            Tag::doubleTag("double", -4.5),
+                            Tag::string("text", "hello"),
+                            Tag::byteArray("bytes", {-1, 0, 1}),
+                            Tag::intArray("ints", {-1, 2}),
+                            Tag::longArray("longs", {-3, 4}),
+                            Tag::list("list", Type::Int, {Tag::intTag("", 1), Tag::intTag("", 2)}),
+                            Tag::compound("nested", {Tag::string("value", "ok")})});
 
   const auto bytes = serialize(root);
   const auto tokens = tokenize(bytes);
@@ -73,7 +83,9 @@ int main() {
   assert(equivalent(root, parse(copied_bytes, content_tokens, content_options)));
 
   Buffer other_bytes = bytes;
-  const auto byte_payload = std::find_if(tokens.tokens.begin(), tokens.tokens.end(), [](const Token &token) { return token.kind == TokenKind::Payload && token.type == Type::Byte; });
+  const auto byte_payload = std::find_if(tokens.tokens.begin(), tokens.tokens.end(), [](const Token &token) {
+    return token.kind == TokenKind::Payload && token.type == Type::Byte;
+  });
   assert(byte_payload != tokens.tokens.end());
   other_bytes[byte_payload->begin] ^= std::byte{0x01};
   bool rejected_other_buffer = false;

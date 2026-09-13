@@ -1,7 +1,114 @@
----
-Language: Cpp
-BasedOnStyle: LLVM
-Standard: c++20
-UseCRLF: false
-ColumnLimit: 256
-...
+﻿---
+Language:        Cpp
+BasedOnStyle:    LLVM
+
+# === Indentation ===
+AccessModifierOffset:           -2
+IndentWidth:                    2
+IndentCaseLabels:               false
+IndentWrappedFunctionNames:     false
+NamespaceIndentation:           None
+ContinuationIndentWidth:        4
+ConstructorInitializerIndentWidth: 4
+TabWidth:                       8
+UseTab:                         Never
+
+# === Line length ===
+ColumnLimit:     250
+
+# === Brace style ===
+BreakBeforeBraces: Attach
+InsertBraces:      true
+
+# === Alignment ===
+AlignAfterOpenBracket:    Align
+AlignConsecutiveAssignments:
+  Enabled:         false
+AlignOperands:     Align
+AlignTrailingComments:
+  Kind:            Always
+  OverEmptyLines:  0
+AlignEscapedNewlines: Right
+
+# === Short constructs ===
+AllowShortBlocksOnASingleLine:     Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine:      true
+AllowShortFunctionsOnASingleLine:  None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine:    None
+AllowShortLoopsOnASingleLine:      false
+
+# === Breaking ===
+AlwaysBreakBeforeMultilineStrings: false
+BreakTemplateDeclarations:         Yes
+BreakBeforeBinaryOperators:        None
+BreakBeforeTernaryOperators:       true
+BreakConstructorInitializers:      BeforeColon
+BreakInheritanceList:              BeforeColon
+BinPackArguments:                  false
+BinPackParameters:                 false
+PackConstructorInitializers:       BinPack
+AllowAllParametersOfDeclarationOnNextLine: true
+
+# === Pointers & references ===
+PointerAlignment:   Right
+DerivePointerAlignment: false
+
+# === Spaces ===
+SpaceAfterCStyleCast:           false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens:              ControlStatements
+SpaceInEmptyBraces:             Never
+SpacesBeforeTrailingComments:   1
+SpacesInAngles:                 Never
+SpacesInContainerLiterals:      false
+SpacesInParens:                 Never
+SpacesInSquareBrackets:         false
+
+# === Includes ===
+SortIncludes:
+  Enabled:    true
+  IgnoreCase: false
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:    '^<.*>'
+    Priority: 1
+  - Regex: '^"[^/\\"]+_exports\.h"$'
+    Priority: 2
+  - Regex:    '^"(async|chat|commands|core|crypto|http|io|logger|minecraft|pipes|plugin|protocol|proxy|redis|types|utils)/'
+    Priority: 3
+  - Regex:    '^".*"'
+    Priority: 4
+CommentPragmas:  '^ IWYU pragma:'
+
+# === Misc ===
+Standard:           Latest
+LineEnding:         LF
+MaxEmptyLinesToKeep: 1
+KeepEmptyLines:
+  AtStartOfBlock: true
+InsertNewlineAtEOF:  true
+RemoveSemicolon:     true
+Cpp11BracedListStyle: true
+ExperimentalAutoDetectBinPacking: false
+DisableFormat:   false
+
+# === ObjC (unused but kept for completeness) ===
+ObjCBlockIndentWidth:       2
+ObjCSpaceAfterProperty:     false
+ObjCSpaceBeforeProtocolList: true
+
+# === ForEach macros ===
+ForEachMacros:
+  - foreach
+  - Q_FOREACH
+  - BOOST_FOREACH
+
+# === Penalties (original values preserved) ===
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment:                  300
+PenaltyBreakFirstLessLess:            120
+PenaltyBreakString:                   1000
+PenaltyExcessCharacter:               1000000
+PenaltyReturnTypeOnItsOwnLine:        60
