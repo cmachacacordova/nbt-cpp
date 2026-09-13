@@ -40,12 +40,15 @@ private:
 };
 
 struct Tag;
+
 struct List {
   std::vector<Tag> values;
 };
+
 struct Compound {
   std::vector<Tag> values;
 };
+
 using Value = std::variant<std::monostate, Byte, std::int16_t, std::int32_t, std::int64_t, float, double, ByteArray, std::string, List, Compound, IntArray, LongArray>;
 
 struct NBT_CPP_API Tag {
@@ -74,6 +77,7 @@ struct NBT_CPP_API Tag {
   [[nodiscard]] T &as() {
     return std::get<T>(value);
   }
+
   template <class T>
   [[nodiscard]] const T &as() const {
     return std::get<T>(value);
@@ -152,13 +156,16 @@ public:
   [[nodiscard]] std::size_t size() const noexcept {
     return size_;
   }
+
   [[nodiscard]] std::int32_t operator[](std::size_t index) const;
 
 private:
   template <Type>
   friend class TagView;
+
   IntArrayView(std::span<const std::byte> source, std::uint32_t begin, std::size_t size) : source_(source), begin_(begin), size_(size) {
   }
+
   std::span<const std::byte> source_;
   std::uint32_t begin_{};
   std::size_t size_{};
@@ -169,13 +176,16 @@ public:
   [[nodiscard]] std::size_t size() const noexcept {
     return size_;
   }
+
   [[nodiscard]] std::int64_t operator[](std::size_t index) const;
 
 private:
   template <Type>
   friend class TagView;
+
   LongArrayView(std::span<const std::byte> source, std::uint32_t begin, std::size_t size) : source_(source), begin_(begin), size_(size) {
   }
+
   std::span<const std::byte> source_;
   std::uint32_t begin_{};
   std::size_t size_{};
@@ -187,6 +197,7 @@ public:
   [[nodiscard]] static constexpr Type type() noexcept {
     return T;
   }
+
   [[nodiscard]] std::string_view name() const noexcept {
     return detail::name(source_, tokens_, index_);
   }
@@ -245,8 +256,10 @@ private:
   friend struct TokenizedView;
   template <Type>
   friend class TagView;
+
   TagView(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t index) : source_(source), tokens_(tokens), index_(index) {
   }
+
   std::span<const std::byte> source_;
   std::span<const Token> tokens_;
   std::uint32_t index_{};
@@ -260,6 +273,7 @@ TagView<T> TokenizedDocument::get(std::string_view name) const {
   }
   return {source, tokens, *found};
 }
+
 template <Type T>
 std::optional<TagView<T>> TokenizedDocument::find(std::string_view name) const {
   const auto found = detail::findChild(source, tokens, 0, name);
@@ -268,6 +282,7 @@ std::optional<TagView<T>> TokenizedDocument::find(std::string_view name) const {
   }
   return TagView<T>{source, tokens, *found};
 }
+
 template <Type T>
 TagView<T> TokenizedDocument::getPath(std::string_view path) const {
   const auto found = detail::findPath(source, tokens, 0, path);
@@ -276,6 +291,7 @@ TagView<T> TokenizedDocument::getPath(std::string_view path) const {
   }
   return {source, tokens, *found};
 }
+
 template <Type T>
 TagView<T> TokenizedView::get(std::string_view name) const {
   const auto found = detail::findChild(source, tokens, 0, name);
@@ -284,6 +300,7 @@ TagView<T> TokenizedView::get(std::string_view name) const {
   }
   return {source, tokens, *found};
 }
+
 template <Type T>
 std::optional<TagView<T>> TokenizedView::find(std::string_view name) const {
   const auto found = detail::findChild(source, tokens, 0, name);
@@ -292,6 +309,7 @@ std::optional<TagView<T>> TokenizedView::find(std::string_view name) const {
   }
   return TagView<T>{source, tokens, *found};
 }
+
 template <Type T>
 TagView<T> TokenizedView::getPath(std::string_view path) const {
   const auto found = detail::findPath(source, tokens, 0, path);

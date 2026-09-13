@@ -231,6 +231,7 @@ private:
     tokens_->push_back(token);
     return tokens_->size() - 1;
   }
+
   void pushDone(TokenKind kind, Type type, std::size_t begin, std::size_t end, std::optional<std::size_t> parent) {
     if (tokens_ != nullptr) {
       Token token;
@@ -242,20 +243,24 @@ private:
       tokens_->push_back(token);
     }
   }
+
   void finish(std::optional<std::size_t> index, std::size_t end) {
     if (index && (tokens_ != nullptr)) {
       (*tokens_)[*index].end = static_cast<std::uint32_t>(end);
       (*tokens_)[*index].subtreeEnd = static_cast<std::uint32_t>(tokens_->size());
     }
   }
+
   void require(std::size_t n) {
     if (n > remaining()) {
       fail("truncated NBT data");
     }
   }
+
   [[noreturn]] void fail(std::string message) const {
     throw Error(std::move(message), pos_);
   }
+
   [[nodiscard]] std::size_t remaining() const {
     return data_.size() - pos_;
   }
@@ -303,6 +308,7 @@ private:
     }
     return static_cast<T>(value);
   }
+
   Type type() {
     const auto value = number<std::uint8_t>();
     if (value > static_cast<unsigned>(Type::LongArray)) {
@@ -310,6 +316,7 @@ private:
     }
     return static_cast<Type>(value);
   }
+
   std::size_t count() {
     const auto value = number<std::int32_t>();
     if (value < 0) {
@@ -320,11 +327,13 @@ private:
     }
     return static_cast<std::size_t>(value);
   }
+
   void string() {
     const auto n = number<std::uint16_t>();
     require(n);
     pos_ += n;
   }
+
   void named(std::uint32_t parent, std::size_t depth) {
     const auto begin = pos_;
     const auto tagType = type();
@@ -338,6 +347,7 @@ private:
     payload(tagType, tag, depth);
     finish(tag);
   }
+
   void payload(Type tagType, std::uint32_t parent, std::size_t depth) {
     if (depth > options_.maxDepth) {
       fail("depth limit exceeded");
@@ -418,6 +428,7 @@ private:
     }
     emit(doneToken(TokenKind::Payload, tagType, begin, pos_, parent));
   }
+
   Token doneToken(TokenKind kind, Type type, std::size_t begin, std::size_t end, std::uint32_t parent) {
     Token t;
     t.kind = kind;
@@ -427,16 +438,19 @@ private:
     t.parent = parent;
     return t;
   }
+
   std::uint32_t beginToken(TokenKind kind, Type type, std::size_t begin, std::uint32_t parent) {
     const auto index = used_;
     emit(doneToken(kind, type, begin, begin, parent));
     return static_cast<std::uint32_t>(index);
   }
+
   void finish(std::uint32_t index) {
     auto &t = token(index);
     t.end = static_cast<std::uint32_t>(pos_);
     t.subtreeEnd = static_cast<std::uint32_t>(used_);
   }
+
   void emit(Token value) {
     if (dynamic_ != nullptr) {
       dynamic_->push_back(value);
@@ -448,24 +462,30 @@ private:
     }
     ++used_;
   }
+
   Token &token(std::uint32_t index) {
     return (dynamic_ != nullptr) ? (*dynamic_)[index] : fixed_[index];
   }
+
   void skip(std::size_t n) {
     require(n);
     pos_ += n;
   }
+
   void require(std::size_t n) {
     if (n > remaining()) {
       fail("truncated NBT data");
     }
   }
+
   [[nodiscard]] std::size_t remaining() const {
     return data_.size() - pos_;
   }
+
   [[noreturn]] void fail(std::string message) const {
     throw Error(std::move(message), pos_);
   }
+
   std::span<const std::byte> data_;
   const ParseOptions &options_;
   std::vector<Token> *dynamic_;
@@ -527,6 +547,7 @@ private:
     }
     return size;
   }
+
   template <class T>
   void number(T value) {
     using U = std::conditional_t<sizeof(T) == 1, std::uint8_t, std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>>;
@@ -540,6 +561,7 @@ private:
       out_.push_back(static_cast<std::byte>((bits >> ((i - 1) * 8)) & 0xff));
     }
   }
+
   void string(std::string_view value) {
     if (value.size() > std::numeric_limits<std::uint16_t>::max()) {
       throw std::invalid_argument("NBT string exceeds 65535 bytes");
@@ -549,6 +571,7 @@ private:
       out_.push_back(static_cast<std::byte>(byte));
     }
   }
+
   void named(const Tag &tag) {
     if (tag.type == Type::End) {
       throw std::invalid_argument("TAG_End cannot be serialized as a named tag");
@@ -557,12 +580,14 @@ private:
     string(tag.name);
     payload(tag);
   }
+
   void length(std::size_t n) {
     if (n > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
       throw std::invalid_argument("NBT collection is too large");
     }
     number<std::int32_t>(static_cast<std::int32_t>(n));
   }
+
   void payload(const Tag &tag) {
     switch (tag.type) {
     case Type::Byte:
@@ -634,15 +659,18 @@ private:
       throw std::invalid_argument("unexpected TAG_End");
     }
   }
+
   Buffer out_;
 };
 
 std::vector<Tag> &children(Tag &tag) {
   return tag.type == Type::List ? tag.as<List>().values : tag.as<Compound>().values;
 }
+
 const std::vector<Tag> &children(const Tag &tag) {
   return tag.type == Type::List ? tag.as<List>().values : tag.as<Compound>().values;
 }
+
 bool container(const Tag &tag) {
   return tag.type == Type::List || tag.type == Type::Compound;
 }
@@ -813,6 +841,7 @@ class SnbtParser {
 public:
   SnbtParser(std::string_view input, const ParseOptions &options) : input_(input), options_(options) {
   }
+
   Tag run() {
     space();
     Tag result;
@@ -860,6 +889,7 @@ private:
     }
     return scalar(std::move(name), text);
   }
+
   Tag compound(std::string name, std::size_t depth) {
     take('{');
     std::vector<Tag> values;
@@ -883,6 +913,7 @@ private:
     }
     return Tag::compound(std::move(name), std::move(values));
   }
+
   Tag list(std::string name, std::size_t depth) {
     take('[');
     space();
@@ -910,6 +941,7 @@ private:
     const auto elementType = values.front().type;
     return Tag::list(std::move(name), elementType, std::move(values));
   }
+
   Tag typedArray(std::string name) {
     char kind = input_[pos_];
     pos_ += 2;
@@ -970,6 +1002,7 @@ private:
     }
     return Tag::longArray(std::move(name), std::move(out));
   }
+
   Tag scalar(std::string name, std::string_view text) {
     try {
       if (text == "true") {
@@ -1023,6 +1056,7 @@ private:
       fail("numeric value out of range");
     }
   }
+
   std::string quoted() {
     char quote = input_[pos_++];
     std::string out;
@@ -1047,6 +1081,7 @@ private:
     }
     fail("unterminated string");
   }
+
   std::string_view bare() {
     space();
     auto start = pos_;
@@ -1055,6 +1090,7 @@ private:
     }
     return input_.substr(start, pos_ - start);
   }
+
   std::string bareKey() {
     space();
     auto start = pos_;
@@ -1066,15 +1102,18 @@ private:
     }
     return std::string(input_.substr(start, pos_ - start));
   }
+
   void space() {
     while (pos_ < input_.size() && (std::isspace(static_cast<unsigned char>(input_[pos_])) != 0)) {
       ++pos_;
     }
   }
+
   char peek() {
     space();
     return pos_ < input_.size() ? input_[pos_] : '\0';
   }
+
   bool accept(char c) {
     space();
     if (pos_ < input_.size() && input_[pos_] == c) {
@@ -1083,14 +1122,17 @@ private:
     }
     return false;
   }
+
   void take(char c) {
     if (!accept(c)) {
       fail(std::string("expected '") + c + "'");
     }
   }
+
   [[noreturn]] void fail(std::string message) const {
     throw Error(std::move(message), pos_);
   }
+
   std::string_view input_;
   const ParseOptions &options_;
   std::size_t pos_{};
@@ -1100,6 +1142,7 @@ private:
 
 Error::Error(std::string message, std::size_t offset) : std::runtime_error(std::move(message)), offset_(offset) {
 }
+
 std::size_t Error::offset() const noexcept {
   return offset_;
 }
@@ -1237,39 +1280,51 @@ std::int64_t LongArrayView::operator[](std::size_t index) const {
 
 Tag::Tag(Type t, std::string n, Value v, Type e) : type(t), name(std::move(n)), value(std::move(v)), elementType(e) {
 }
+
 Tag Tag::byte(std::string n, Byte v) {
   return {Type::Byte, std::move(n), v};
 }
+
 Tag Tag::shortTag(std::string n, std::int16_t v) {
   return {Type::Short, std::move(n), v};
 }
+
 Tag Tag::intTag(std::string n, std::int32_t v) {
   return {Type::Int, std::move(n), v};
 }
+
 Tag Tag::longTag(std::string n, std::int64_t v) {
   return {Type::Long, std::move(n), v};
 }
+
 Tag Tag::floatTag(std::string n, float v) {
   return {Type::Float, std::move(n), v};
 }
+
 Tag Tag::doubleTag(std::string n, double v) {
   return {Type::Double, std::move(n), v};
 }
+
 Tag Tag::byteArray(std::string n, ByteArray v) {
   return {Type::ByteArray, std::move(n), std::move(v)};
 }
+
 Tag Tag::string(std::string n, std::string v) {
   return {Type::String, std::move(n), std::move(v)};
 }
+
 Tag Tag::list(std::string n, Type e, std::vector<Tag> v) {
   return {Type::List, std::move(n), List{std::move(v)}, e};
 }
+
 Tag Tag::compound(std::string n, std::vector<Tag> v) {
   return {Type::Compound, std::move(n), Compound{std::move(v)}};
 }
+
 Tag Tag::intArray(std::string n, IntArray v) {
   return {Type::IntArray, std::move(n), std::move(v)};
 }
+
 Tag Tag::longArray(std::string n, LongArray v) {
   return {Type::LongArray, std::move(n), std::move(v)};
 }
@@ -1286,6 +1341,7 @@ TokenizedDocument tokenize(std::span<const std::byte> input, const ParseOptions 
   }
   return document;
 }
+
 TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output, const ParseOptions &options) {
   const auto count = Tokenizer(input, options, nullptr, output).run();
   TokenizedView document{input, output.first(count), 0, false, options.format};
@@ -1295,6 +1351,7 @@ TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output
   }
   return document;
 }
+
 Tag parse(std::span<const std::byte> input, const ParseOptions &options) {
   return Reader(input, options, nullptr).root();
 }
@@ -1324,15 +1381,19 @@ Tag parseTokenized(std::span<const std::byte> input, std::span<const std::byte> 
 Tag parse(const TokenizedDocument &document, const ParseOptions &options) {
   return parseTokenized(document.source, document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
 }
+
 Tag parse(const TokenizedView &document, const ParseOptions &options) {
   return parseTokenized(document.source, document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
 }
+
 Tag parse(std::span<const std::byte> input, const TokenizedDocument &document, const ParseOptions &options) {
   return parseTokenized(input, document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
 }
+
 Tag parse(std::span<const std::byte> input, const TokenizedView &document, const ParseOptions &options) {
   return parseTokenized(input, document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
 }
+
 Buffer serialize(const Tag &root, BinaryFormat format) {
   if (root.type == Type::End) {
     throw std::invalid_argument("TAG_End cannot be serialized as a root tag");
@@ -1342,6 +1403,7 @@ Buffer serialize(const Tag &root, BinaryFormat format) {
   }
   return Writer().run(root, format == BinaryFormat::File);
 }
+
 Buffer compress(std::span<const std::byte> input, Compression c) {
   if (c == Compression::None) {
     return {input.begin(), input.end()};
@@ -1351,12 +1413,14 @@ Buffer compress(std::span<const std::byte> input, Compression c) {
   }
   return zcode(input, c == Compression::Gzip ? 31 : 15, true);
 }
+
 Buffer decompress(std::span<const std::byte> input, Compression c) {
   if (c == Compression::None) {
     return {input.begin(), input.end()};
   }
   return zcode(input, c == Compression::Gzip ? 31 : c == Compression::Zlib ? 15 : 47, false);
 }
+
 Tag load(const std::filesystem::path &path, Compression c, const ParseOptions &options) {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) {
@@ -1381,6 +1445,7 @@ Tag load(const std::filesystem::path &path, Compression c, const ParseOptions &o
   auto raw = decompress(b, c);
   return parse(raw, options);
 }
+
 void save(const std::filesystem::path &path, const Tag &root, Compression c) {
   auto raw = serialize(root);
   auto data = compress(raw, c);
@@ -1393,6 +1458,7 @@ void save(const std::filesystem::path &path, const Tag &root, Compression c) {
 Tag clone(const Tag &tag) {
   return tag;
 }
+
 bool map(Tag &root, const Visitor &v) {
   if (!v(root)) {
     return false;
@@ -1406,6 +1472,7 @@ bool map(Tag &root, const Visitor &v) {
   }
   return true;
 }
+
 bool map(const Tag &root, const ConstVisitor &v) {
   if (!v(root)) {
     return false;
@@ -1419,6 +1486,7 @@ bool map(const Tag &root, const ConstVisitor &v) {
   }
   return true;
 }
+
 std::optional<Tag> filter(const Tag &root, const Predicate &p) {
   if (!p(root)) {
     return std::nullopt;
@@ -1439,6 +1507,7 @@ std::optional<Tag> filter(const Tag &root, const Predicate &p) {
   }
   return copy;
 }
+
 void filterInPlace(Tag &root, const Predicate &p) {
   if (!container(root)) {
     return;
@@ -1455,6 +1524,7 @@ void filterInPlace(Tag &root, const Predicate &p) {
                          }),
           v.end());
 }
+
 Tag *find(Tag &root, const Predicate &p) {
   if (p(root)) {
     return &root;
@@ -1468,6 +1538,7 @@ Tag *find(Tag &root, const Predicate &p) {
   }
   return nullptr;
 }
+
 const Tag *find(const Tag &root, const Predicate &p) {
   if (p(root)) {
     return &root;
@@ -1481,22 +1552,27 @@ const Tag *find(const Tag &root, const Predicate &p) {
   }
   return nullptr;
 }
+
 Tag *findByName(Tag &root, std::string_view n) {
   return find(root, [&](const Tag &t) {
     return t.name == n;
   });
 }
+
 const Tag *findByName(const Tag &root, std::string_view n) {
   return find(root, [&](const Tag &t) {
     return t.name == n;
   });
 }
+
 Tag *at(Tag &tag, std::size_t index) {
   return container(tag) && index < children(tag).size() ? &children(tag)[index] : nullptr;
 }
+
 const Tag *at(const Tag &tag, std::size_t index) {
   return container(tag) && index < children(tag).size() ? &children(tag)[index] : nullptr;
 }
+
 Tag *findByPath(Tag &root, std::string_view path) {
   Tag *cur = &root;
   size_t start = 0;
@@ -1524,9 +1600,11 @@ Tag *findByPath(Tag &root, std::string_view path) {
   }
   return cur;
 }
+
 const Tag *findByPath(const Tag &root, std::string_view path) {
   return findByPath(const_cast<Tag &>(root), path);
 }
+
 std::size_t size(const Tag &root) {
   std::size_t n = 1;
   if (container(root)) {
@@ -1536,6 +1614,7 @@ std::size_t size(const Tag &root) {
   }
   return n;
 }
+
 bool equivalent(const Tag &a, const Tag &b, double e) {
   if (a.type != b.type || a.name != b.name || a.elementType != b.elementType) {
     return false;
@@ -1576,14 +1655,17 @@ bool equivalent(const Tag &a, const Tag &b, double e) {
   }
   return false;
 }
+
 Tag parseSnbt(std::string_view input, const ParseOptions &options) {
   return SnbtParser(input, options).run();
 }
+
 std::string toSnbt(const Tag &root, bool pretty) {
   std::ostringstream out;
   snbt(root, out, pretty, 0, true);
   return out.str();
 }
+
 std::string_view typeName(Type t) noexcept {
   static constexpr std::string_view names[] = {"TAG_End", "TAG_Byte", "TAG_Short", "TAG_Int", "TAG_Long", "TAG_Float", "TAG_Double", "TAG_Byte_Array", "TAG_String", "TAG_List", "TAG_Compound", "TAG_Int_Array", "TAG_Long_Array"};
   auto i = static_cast<size_t>(t);
@@ -1592,6 +1674,7 @@ std::string_view typeName(Type t) noexcept {
 
 Builder::Builder(std::string name) : root_(Tag::compound(std::move(name))), stack_{&root_} {
 }
+
 Builder &Builder::add(Tag tag) {
   if (stack_.empty() || !container(*stack_.back())) {
     throw std::logic_error("builder has no open container");
@@ -1605,18 +1688,21 @@ Builder &Builder::add(Tag tag) {
   children(*stack_.back()).push_back(std::move(tag));
   return *this;
 }
+
 Builder &Builder::beginCompound(std::string name) {
   add(Tag::compound(std::move(name)));
   auto &v = children(*stack_.back());
   stack_.push_back(&v.back());
   return *this;
 }
+
 Builder &Builder::beginList(std::string name, Type type) {
   add(Tag::list(std::move(name), type));
   auto &v = children(*stack_.back());
   stack_.push_back(&v.back());
   return *this;
 }
+
 Builder &Builder::end() {
   if (stack_.size() <= 1) {
     throw std::logic_error("cannot close root compound");
@@ -1624,6 +1710,7 @@ Builder &Builder::end() {
   stack_.pop_back();
   return *this;
 }
+
 Tag Builder::build() const {
   if (stack_.size() != 1) {
     throw std::logic_error("builder contains unclosed containers");
