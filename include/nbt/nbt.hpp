@@ -13,6 +13,8 @@
 #include <variant>
 #include <vector>
 
+#include "nbt/export.hpp"
+
 namespace nbt {
 
 using Byte = std::int8_t;
@@ -28,7 +30,7 @@ enum class BinaryFormat { File, Network };
 enum class SourceValidation { Identity, Content, None };
 enum class TokenKind : std::uint8_t { Tag, Name, Payload };
 
-class Error : public std::runtime_error {
+class NBT_CPP_API Error : public std::runtime_error {
 public:
   Error(std::string message, std::size_t offset);
   [[nodiscard]] std::size_t offset() const noexcept;
@@ -46,7 +48,7 @@ struct Compound {
 };
 using Value = std::variant<std::monostate, Byte, std::int16_t, std::int32_t, std::int64_t, float, double, ByteArray, std::string, List, Compound, IntArray, LongArray>;
 
-struct Tag {
+struct NBT_CPP_API Tag {
   Type type{Type::End};
   std::string name;
   Value value;
@@ -124,15 +126,15 @@ struct TokenizedView {
 };
 
 namespace detail {
-[[nodiscard]] std::optional<std::uint32_t> findChild(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t parent, std::string_view name) noexcept;
-[[nodiscard]] std::optional<std::uint32_t> findPath(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t parent, std::string_view path) noexcept;
-[[nodiscard]] std::optional<std::uint32_t> listItem(std::span<const Token> tokens, std::uint32_t parent, std::size_t index) noexcept;
-[[nodiscard]] const Token &payload(std::span<const Token> tokens, std::uint32_t tag);
-[[nodiscard]] std::string_view name(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t tag) noexcept;
-[[nodiscard]] std::uint64_t readUnsigned(std::span<const std::byte> source, std::uint32_t begin, std::size_t size);
+[[nodiscard]] NBT_CPP_API std::optional<std::uint32_t> findChild(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t parent, std::string_view name) noexcept;
+[[nodiscard]] NBT_CPP_API std::optional<std::uint32_t> findPath(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t parent, std::string_view path) noexcept;
+[[nodiscard]] NBT_CPP_API std::optional<std::uint32_t> listItem(std::span<const Token> tokens, std::uint32_t parent, std::size_t index) noexcept;
+[[nodiscard]] NBT_CPP_API const Token &payload(std::span<const Token> tokens, std::uint32_t tag);
+[[nodiscard]] NBT_CPP_API std::string_view name(std::span<const std::byte> source, std::span<const Token> tokens, std::uint32_t tag) noexcept;
+[[nodiscard]] NBT_CPP_API std::uint64_t readUnsigned(std::span<const std::byte> source, std::uint32_t begin, std::size_t size);
 } // namespace detail
 
-class IntArrayView {
+class NBT_CPP_API IntArrayView {
 public:
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] std::int32_t operator[](std::size_t index) const;
@@ -145,7 +147,7 @@ private:
   std::size_t size_{};
 };
 
-class LongArrayView {
+class NBT_CPP_API LongArrayView {
 public:
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] std::int64_t operator[](std::size_t index) const;
@@ -255,43 +257,43 @@ template <Type T> TagView<T> TokenizedView::getPath(std::string_view path) const
   return {source, tokens, *found};
 }
 
-[[nodiscard]] TokenizedDocument tokenize(std::span<const std::byte> input, const ParseOptions &options = {});
-[[nodiscard]] TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output, const ParseOptions &options = {});
-[[nodiscard]] Tag parse(std::span<const std::byte> input, const ParseOptions &options = {});
-[[nodiscard]] Tag parse(const TokenizedDocument &document, const ParseOptions &options = {});
-[[nodiscard]] Tag parse(const TokenizedView &document, const ParseOptions &options = {});
-[[nodiscard]] Tag parse(std::span<const std::byte> input, const TokenizedDocument &document, const ParseOptions &options = {});
-[[nodiscard]] Tag parse(std::span<const std::byte> input, const TokenizedView &document, const ParseOptions &options = {});
-[[nodiscard]] Buffer serialize(const Tag &root, BinaryFormat format = BinaryFormat::File);
+[[nodiscard]] NBT_CPP_API TokenizedDocument tokenize(std::span<const std::byte> input, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(std::span<const std::byte> input, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(const TokenizedDocument &document, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(const TokenizedView &document, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(std::span<const std::byte> input, const TokenizedDocument &document, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(std::span<const std::byte> input, const TokenizedView &document, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Buffer serialize(const Tag &root, BinaryFormat format = BinaryFormat::File);
 
-[[nodiscard]] Buffer compress(std::span<const std::byte> input, Compression compression);
-[[nodiscard]] Buffer decompress(std::span<const std::byte> input, Compression compression = Compression::Auto);
-[[nodiscard]] Tag load(const std::filesystem::path &path, Compression compression = Compression::Auto, const ParseOptions &options = {});
-void save(const std::filesystem::path &path, const Tag &root, Compression compression = Compression::None);
+[[nodiscard]] NBT_CPP_API Buffer compress(std::span<const std::byte> input, Compression compression);
+[[nodiscard]] NBT_CPP_API Buffer decompress(std::span<const std::byte> input, Compression compression = Compression::Auto);
+[[nodiscard]] NBT_CPP_API Tag load(const std::filesystem::path &path, Compression compression = Compression::Auto, const ParseOptions &options = {});
+NBT_CPP_API void save(const std::filesystem::path &path, const Tag &root, Compression compression = Compression::None);
 
-[[nodiscard]] Tag clone(const Tag &tag);
+[[nodiscard]] NBT_CPP_API Tag clone(const Tag &tag);
 using Visitor = std::function<bool(Tag &)>;
 using ConstVisitor = std::function<bool(const Tag &)>;
 using Predicate = std::function<bool(const Tag &)>;
-bool map(Tag &root, const Visitor &visitor);
-bool map(const Tag &root, const ConstVisitor &visitor);
-[[nodiscard]] std::optional<Tag> filter(const Tag &root, const Predicate &predicate);
-void filterInPlace(Tag &root, const Predicate &predicate);
-[[nodiscard]] Tag *find(Tag &root, const Predicate &predicate);
-[[nodiscard]] const Tag *find(const Tag &root, const Predicate &predicate);
-[[nodiscard]] Tag *findByName(Tag &root, std::string_view name);
-[[nodiscard]] const Tag *findByName(const Tag &root, std::string_view name);
-[[nodiscard]] Tag *findByPath(Tag &root, std::string_view path);
-[[nodiscard]] const Tag *findByPath(const Tag &root, std::string_view path);
-[[nodiscard]] Tag *at(Tag &container, std::size_t index);
-[[nodiscard]] const Tag *at(const Tag &container, std::size_t index);
-[[nodiscard]] std::size_t size(const Tag &root);
-[[nodiscard]] bool equivalent(const Tag &a, const Tag &b, double epsilon = 1e-6);
-[[nodiscard]] Tag parseSnbt(std::string_view input, const ParseOptions &options = {});
-[[nodiscard]] std::string toSnbt(const Tag &root, bool pretty = true);
-[[nodiscard]] std::string_view typeName(Type type) noexcept;
+NBT_CPP_API bool map(Tag &root, const Visitor &visitor);
+NBT_CPP_API bool map(const Tag &root, const ConstVisitor &visitor);
+[[nodiscard]] NBT_CPP_API std::optional<Tag> filter(const Tag &root, const Predicate &predicate);
+NBT_CPP_API void filterInPlace(Tag &root, const Predicate &predicate);
+[[nodiscard]] NBT_CPP_API Tag *find(Tag &root, const Predicate &predicate);
+[[nodiscard]] NBT_CPP_API const Tag *find(const Tag &root, const Predicate &predicate);
+[[nodiscard]] NBT_CPP_API Tag *findByName(Tag &root, std::string_view name);
+[[nodiscard]] NBT_CPP_API const Tag *findByName(const Tag &root, std::string_view name);
+[[nodiscard]] NBT_CPP_API Tag *findByPath(Tag &root, std::string_view path);
+[[nodiscard]] NBT_CPP_API const Tag *findByPath(const Tag &root, std::string_view path);
+[[nodiscard]] NBT_CPP_API Tag *at(Tag &container, std::size_t index);
+[[nodiscard]] NBT_CPP_API const Tag *at(const Tag &container, std::size_t index);
+[[nodiscard]] NBT_CPP_API std::size_t size(const Tag &root);
+[[nodiscard]] NBT_CPP_API bool equivalent(const Tag &a, const Tag &b, double epsilon = 1e-6);
+[[nodiscard]] NBT_CPP_API Tag parseSnbt(std::string_view input, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API std::string toSnbt(const Tag &root, bool pretty = true);
+[[nodiscard]] NBT_CPP_API std::string_view typeName(Type type) noexcept;
 
-class Builder {
+class NBT_CPP_API Builder {
 public:
   explicit Builder(std::string rootName = {});
   Builder &add(Tag tag);

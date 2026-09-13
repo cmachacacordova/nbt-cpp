@@ -1,0 +1,8 @@
+nbt-cpp provides CMake targets:
+
+  find_package(nbt-cpp CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE nbt::nbt)
+
+Include the public API with:
+
+  #include <nbt/nbt.hpp>

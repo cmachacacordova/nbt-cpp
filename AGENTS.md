@@ -7,6 +7,8 @@
 - Implementation: `src/nbt.cpp`.
 - Tests: `tests/nbt_tests.cpp`.
 - zlib is supplied through the `vcpkg.json` manifest.
+- The CMake package exports `nbt::nbt`; keep `find_package(nbt-cpp CONFIG REQUIRED)` working.
+- The overlay port is under `ports/nbt-cpp` and is validated through `VCPKG_OVERLAY_PORTS`.
 - Keep all text files LF-only.
 - Use lowerCamelCase for functions, methods, fields, parameters and local variables; use PascalCase for types and enum members.
 
@@ -35,5 +37,7 @@ ctest --test-dir build-vcpkg -C Debug --output-on-failure
 cmake --build build-vcpkg --config Release
 ctest --test-dir build-vcpkg -C Release --output-on-failure
 ```
+
+Static and shared linkage are both supported; use `BUILD_SHARED_LIBS` for CMake and `VCPKG_LIBRARY_LINKAGE` for vcpkg. Windows shared builds require matching CRT/ABI between the library and the consumer.
 
 Run `git diff --check` before completing changes.

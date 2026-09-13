@@ -807,3 +807,5 @@ FodyWeavers.xsd
 # End of https://www.toptal.com/developers/gitignore/api/c,c++,java,cmake,linux,macos,ninja,xcode,windows,visualstudio,visualstudiocode,intellij,eclipse,executable
 
 /build*/
+.package-test/
+.port-test/

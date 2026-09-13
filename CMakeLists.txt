@@ -10,6 +10,12 @@ find_package(ZLIB REQUIRED)
 
 add_library(nbt-cpp src/nbt.cpp)
 add_library(nbt::nbt ALIAS nbt-cpp)
+set_target_properties(nbt-cpp PROPERTIES
+    EXPORT_NAME nbt
+    POSITION_INDEPENDENT_CODE ON)
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(nbt-cpp PRIVATE NBT_CPP_EXPORTS PUBLIC NBT_CPP_SHARED)
+endif()
 target_compile_features(nbt-cpp PUBLIC cxx_std_20)
 target_include_directories(nbt-cpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -67,6 +73,29 @@ if(NBT_CPP_BUILD_TESTS)
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS nbt-cpp EXPORT nbt-cpp-targets)
+include(CMakePackageConfigHelpers)
+
+set(nbtCppCmakeDir "${CMAKE_INSTALL_LIBDIR}/cmake/nbt-cpp")
+configure_package_config_file(
+    cmake/nbt-cpp-config.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config.cmake"
+    INSTALL_DESTINATION "${nbtCppCmakeDir}")
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+
+install(TARGETS nbt-cpp EXPORT nbt-cpp-targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(EXPORT nbt-cpp-targets NAMESPACE nbt:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nbt-cpp)
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/nbt-cpp)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config-version.cmake"
+    DESTINATION "${nbtCppCmakeDir}")
+install(EXPORT nbt-cpp-targets
+    FILE nbt-cpp-targets.cmake
+    NAMESPACE nbt::
+    DESTINATION "${nbtCppCmakeDir}")

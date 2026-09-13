@@ -14,6 +14,58 @@ ctest --test-dir build -C Release --output-on-failure
 
 The library target is `nbt::nbt`; zlib is the only dependency.
 
+## Static and shared builds
+
+By default CMake builds a static library. Build a shared library with:
+
+```sh
+cmake -S . -B build -DBUILD_SHARED_LIBS=ON
+```
+
+With vcpkg the linkage follows `VCPKG_LIBRARY_LINKAGE` (`static` or `dynamic`):
+
+```sh
+vcpkg install nbt-cpp:x64-windows --overlay-ports=ports        # dynamic
+vcpkg install nbt-cpp:x64-windows-static --overlay-ports=ports  # static
+```
+
+Windows consumers of a shared build must place `nbt-cpp.dll` on `PATH` or next to the executable. The public API uses standard C++ types, so the library and the consumer must be built with the same C++20 ABI and MSVC runtime library to avoid ODR mismatches.
+
+## Install with vcpkg
+
+Use the included overlay port:
+
+```sh
+vcpkg install nbt-cpp --overlay-ports=ports
+```
+
+In manifest mode, add `nbt-cpp` to the consumer's `vcpkg.json` and configure with:
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_OVERLAY_PORTS=/path/to/nbt-cpp/ports
+```
+
+Consume the installed package with:
+
+```cmake
+find_package(nbt-cpp CONFIG REQUIRED)
+target_link_libraries(application PRIVATE nbt::nbt)
+```
+
+The current port is reproducibly pinned to a GitHub commit and uses Git/SSH, so private repository access follows the user's configured SSH credentials.
+
+## Install as a CMake package
+
+```sh
+cmake -S . -B build -DNBT_CPP_BUILD_TESTS=OFF -DNBT_CPP_BUILD_EXAMPLES=OFF
+cmake --build build --config Release
+cmake --install build --config Release --prefix install
+```
+
+Consumers can set `CMAKE_PREFIX_PATH` to the install prefix and use the same `find_package` and target shown above.
+
 ## Parse directly or through tokens
 
 ```cpp
