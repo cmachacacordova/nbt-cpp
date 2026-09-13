@@ -1,13 +1,7 @@
 vcpkg_from_git(
     OUT_SOURCE_PATH SOURCE_PATH
     URL git@github.com:cmachacacordova/nbt-cpp.git
-    REF e3aa068e48614998216cf7d8bac44e2dc39d522c
-)
-
-vcpkg_replace_string(
-    "${SOURCE_PATH}/CMakeLists.txt"
-    "add_library(nbt::nbt ALIAS nbt-cpp)"
-    "add_library(nbt::nbt ALIAS nbt-cpp)\nset_target_properties(nbt-cpp PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON POSITION_INDEPENDENT_CODE ON)"
+    REF a64a795562520500682d16af9dd3b7684a674b35
 )
 
 vcpkg_cmake_configure(
@@ -30,6 +24,7 @@ foreach(targetFile IN LISTS targetFiles)
 endforeach()
 vcpkg_cmake_config_fixup(PACKAGE_NAME nbt-cpp CONFIG_PATH lib/cmake/nbt-cpp)
 
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 vcpkg_copy_pdbs()
 vcpkg_install_copyright(FILE_LIST "${CMAKE_CURRENT_LIST_DIR}/LICENSE")
