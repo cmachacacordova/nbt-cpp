@@ -1,10 +1,12 @@
 #pragma once
 
 #include <bit>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -23,15 +25,35 @@ using IntArray = std::vector<std::int32_t>;
 using LongArray = std::vector<std::int64_t>;
 using Buffer = std::vector<std::byte>;
 
+// using Buffer = std::span<const std::byte>;
+
 class BufferChain {
 public:
+  struct Ring {
+    std::span<const std::byte> data;
+    std::shared_ptr<Ring> next;
+    std::weak_ptr<Ring> last;
+  };
+
   BufferChain() = default;
 
+  BufferChain &append(std::span<const unsigned char> chunk) {
+    return this->append(std::span<const std::byte>(reinterpret_cast<const std::byte *>(chunk.data()), chunk.size()));
+  }
+
   BufferChain &append(std::span<const std::byte> chunk) {
-    if (!chunk.empty()) {
-      chunks_.push_back(chunk);
-      totalSize_ += chunk.size();
+    auto ring = std::make_shared<Ring>();
+    ring->data = chunk;
+    ring->next = nullptr;
+
+    if (this->chain_ == nullptr) {
+      this->chain_ = ring;
+    } else if (auto last = this->chain_->last.lock()) {
+      last->next = ring;
     }
+
+    this->chain_->last = ring;
+    this->totalSize_ += chunk.size();
     return *this;
   }
 
@@ -51,25 +73,30 @@ public:
     return totalSize_;
   }
 
-  [[nodiscard]] std::size_t chunkCount() const noexcept {
-    return chunks_.size();
-  }
-
-  [[nodiscard]] std::span<const std::byte> chunk(std::size_t index) const noexcept {
-    return index < chunks_.size() ? chunks_[index] : std::span<const std::byte>{};
+  [[nodiscard]] const Ring *head() const noexcept {
+    return chain_.get();
   }
 
   [[nodiscard]] Buffer flatten() const {
     Buffer result;
-    result.reserve(totalSize_);
-    for (const auto &entry : chunks_) {
-      result.insert(result.end(), entry.begin(), entry.end());
+    auto ring = this->chain_;
+
+    if (ring == nullptr) {
+      return result;
     }
+
+    result.reserve(totalSize_);
+
+    do {
+      result.insert(result.end(), ring->data.begin(), ring->data.end());
+      ring = ring->next;
+    } while (ring != nullptr);
+
     return result;
   }
 
 private:
-  std::vector<std::span<const std::byte>> chunks_;
+  std::shared_ptr<Ring> chain_;
   std::size_t totalSize_{};
 };
 
@@ -380,6 +407,7 @@ TagView<T> TokenizedView::getPath(std::string_view path) const {
 [[nodiscard]] NBT_CPP_API Buffer serialize(const Tag &root, BinaryFormat format = BinaryFormat::File);
 
 [[nodiscard]] NBT_CPP_API Buffer compress(std::span<const std::byte> input, Compression compression);
+[[nodiscard]] NBT_CPP_API Buffer compress(const BufferChain &input, Compression compression);
 [[nodiscard]] NBT_CPP_API Buffer decompress(std::span<const std::byte> input, Compression compression = Compression::Auto);
 [[nodiscard]] NBT_CPP_API Buffer decompress(const BufferChain &input, Compression compression = Compression::Auto);
 [[nodiscard]] NBT_CPP_API Tag load(const std::filesystem::path &path, Compression compression = Compression::Auto, const ParseOptions &options = {});

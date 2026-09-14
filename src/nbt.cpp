@@ -86,7 +86,7 @@ private:
 
 class ChainInputStream : public InputStream {
 public:
-  explicit ChainInputStream(const BufferChain &chain) : chain_(chain), pos_(0), chunkIndex_(0), offsetInChunk_(0) {
+  explicit ChainInputStream(const BufferChain &chain) : chain_(chain), pos_(0), current_(chain.head()), offsetInChunk_(0) {
   }
 
   [[nodiscard]] std::size_t position() const override {
@@ -107,10 +107,9 @@ public:
     require(n);
     while (n > 0) {
       advanceChunk();
-      const auto chunk = chain_.chunk(chunkIndex_);
-      const auto available = chunk.size() - offsetInChunk_;
+      const auto available = current_->data.size() - offsetInChunk_;
       const auto take = std::min(available, n);
-      std::memcpy(dest, chunk.data() + offsetInChunk_, take);
+      std::memcpy(dest, current_->data.data() + offsetInChunk_, take);
       offsetInChunk_ += take;
       pos_ += take;
       dest += take;
@@ -121,7 +120,7 @@ public:
   [[nodiscard]] std::byte peekByte() override {
     require(1);
     advanceChunk();
-    return chain_.chunk(chunkIndex_)[offsetInChunk_];
+    return current_->data[offsetInChunk_];
   }
 
 private:
@@ -130,15 +129,18 @@ private:
   }
 
   void advanceChunk() {
-    while (chunkIndex_ < chain_.chunkCount() && offsetInChunk_ >= chain_.chunk(chunkIndex_).size()) {
+    while (current_ != nullptr && offsetInChunk_ >= current_->data.size()) {
       offsetInChunk_ = 0;
-      ++chunkIndex_;
+      current_ = current_->next.get();
+    }
+    if (current_ == nullptr) {
+      fail("truncated NBT data");
     }
   }
 
   const BufferChain &chain_;
   std::size_t pos_{};
-  std::size_t chunkIndex_{};
+  const BufferChain::Ring *current_{};
   std::size_t offsetInChunk_{};
 };
 
@@ -944,6 +946,60 @@ Buffer zcode(std::span<const std::byte> input, int window_bits, bool encode) {
   return output;
 }
 
+Buffer zcodeStream(const BufferChain &chain, int window_bits, bool encode) {
+  z_stream stream{};
+  int status = encode ? deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, window_bits, 8, Z_DEFAULT_STRATEGY) : inflateInit2(&stream, window_bits);
+  if (status != Z_OK) {
+    throw std::runtime_error("zlib initialization failed");
+  }
+  Buffer output;
+  std::byte block[4096];
+
+  const auto cleanup = [&stream, encode]() {
+    if (encode) {
+      deflateEnd(&stream);
+    } else {
+      inflateEnd(&stream);
+    }
+  };
+
+  try {
+    for (auto ring = chain.head(); ring != nullptr; ring = ring->next.get()) {
+      stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(ring->data.data()));
+      stream.avail_in = static_cast<uInt>(ring->data.size());
+      while (stream.avail_in > 0) {
+        stream.next_out = reinterpret_cast<Bytef *>(block);
+        stream.avail_out = sizeof block;
+        status = encode ? deflate(&stream, Z_NO_FLUSH) : inflate(&stream, Z_NO_FLUSH);
+        if (status != Z_OK && status != Z_STREAM_END && (!encode || status != Z_BUF_ERROR)) {
+          cleanup();
+          throw std::runtime_error("invalid or unsupported compressed NBT data");
+        }
+        output.insert(output.end(), block, block + sizeof block - stream.avail_out);
+        if (!encode && status == Z_STREAM_END) {
+          cleanup();
+          return output;
+        }
+      }
+    }
+    do {
+      stream.next_out = reinterpret_cast<Bytef *>(block);
+      stream.avail_out = sizeof block;
+      status = encode ? deflate(&stream, Z_FINISH) : inflate(&stream, Z_NO_FLUSH);
+      if (status != Z_OK && status != Z_STREAM_END && (!encode || status != Z_BUF_ERROR)) {
+        cleanup();
+        throw std::runtime_error("invalid or unsupported compressed NBT data");
+      }
+      output.insert(output.end(), block, block + sizeof block - stream.avail_out);
+    } while (status != Z_STREAM_END);
+  } catch (...) {
+    cleanup();
+    throw;
+  }
+  cleanup();
+  return output;
+}
+
 class SnbtParser {
 public:
   SnbtParser(std::string_view input, const ParseOptions &options) : input_(input), options_(options) {
@@ -1528,6 +1584,16 @@ Buffer compress(std::span<const std::byte> input, Compression comp) {
   return zcode(input, comp == Compression::Gzip ? 31 : 15, true);
 }
 
+Buffer compress(const BufferChain &input, Compression comp) {
+  if (comp == Compression::None) {
+    return input.flatten();
+  }
+  if (comp == Compression::Auto) {
+    throw std::invalid_argument("Auto is invalid for compression");
+  }
+  return zcodeStream(input, comp == Compression::Gzip ? 31 : 15, true);
+}
+
 Buffer decompress(std::span<const std::byte> input, Compression comp) {
   if (comp == Compression::None) {
     return {input.begin(), input.end()};
@@ -1536,7 +1602,10 @@ Buffer decompress(std::span<const std::byte> input, Compression comp) {
 }
 
 Buffer decompress(const BufferChain &input, Compression comp) {
-  return decompress(std::span<const std::byte>{input.flatten()}, comp);
+  if (comp == Compression::None) {
+    return input.flatten();
+  }
+  return zcodeStream(input, comp == Compression::Gzip ? 31 : comp == Compression::Zlib ? 15 : 47, false);
 }
 
 Tag load(const std::filesystem::path &path, Compression comp, const ParseOptions &options) {
