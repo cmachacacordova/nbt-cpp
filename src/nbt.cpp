@@ -28,23 +28,6 @@ std::uint64_t bufferFingerprint(std::span<const std::byte> data) noexcept {
   return hash;
 }
 
-class InputStream {
-public:
-  virtual ~InputStream() = default;
-
-  [[nodiscard]] virtual std::size_t position() const = 0;
-  [[nodiscard]] virtual std::size_t remaining() const = 0;
-  virtual void require(std::size_t n) = 0;
-  virtual void readBytes(std::byte *dest, std::size_t n) = 0;
-  [[nodiscard]] virtual std::byte peekByte() = 0;
-
-  std::byte readByte() {
-    std::byte value;
-    readBytes(&value, 1);
-    return value;
-  }
-};
-
 class SpanInputStream : public InputStream {
 public:
   explicit SpanInputStream(std::span<const std::byte> data) : data_(data), pos_(0) {
@@ -60,7 +43,7 @@ public:
 
   void require(std::size_t n) override {
     if (n > remaining()) {
-      fail("truncated NBT data");
+      throw IncompleteDataError("truncated NBT data", pos_);
     }
   }
 
@@ -76,10 +59,6 @@ public:
   }
 
 private:
-  [[noreturn]] void fail(const char *message) const {
-    throw Error(message, pos_);
-  }
-
   std::span<const std::byte> data_;
   std::size_t pos_{};
 };
@@ -99,7 +78,7 @@ public:
 
   void require(std::size_t n) override {
     if (n > remaining()) {
-      fail("truncated NBT data");
+      throw IncompleteDataError("truncated NBT data", pos_);
     }
   }
 
@@ -124,17 +103,13 @@ public:
   }
 
 private:
-  [[noreturn]] void fail(const char *message) const {
-    throw Error(message, pos_);
-  }
-
   void advanceChunk() {
     while (current_ != nullptr && offsetInChunk_ >= current_->data.size()) {
       offsetInChunk_ = 0;
       current_ = current_->next.get();
     }
     if (current_ == nullptr) {
-      fail("truncated NBT data");
+      throw IncompleteDataError("truncated NBT data", pos_);
     }
   }
 
@@ -274,7 +249,7 @@ private:
       const auto ncount = count();
       IntArray values(ncount);
       if (ncount > stream_.remaining() / 4) {
-        fail("truncated int array");
+        throw IncompleteDataError("truncated int array", stream_.position());
       }
       for (auto &value : values) {
         value = number<std::int32_t>();
@@ -286,7 +261,7 @@ private:
       const auto ncount = count();
       LongArray values(ncount);
       if (ncount > stream_.remaining() / 8) {
-        fail("truncated long array");
+        throw IncompleteDataError("truncated long array", stream_.position());
       }
       for (auto &value : values) {
         value = number<std::int64_t>();
@@ -488,7 +463,7 @@ private:
     case Type::IntArray: {
       const auto ncount = count();
       if (ncount > remaining() / 4) {
-        fail("truncated int array");
+        throw IncompleteDataError("truncated int array", pos_);
       }
       skip(ncount * 4);
       break;
@@ -496,7 +471,7 @@ private:
     case Type::LongArray: {
       const auto ncount = count();
       if (ncount > remaining() / 8) {
-        fail("truncated long array");
+        throw IncompleteDataError("truncated long array", pos_);
       }
       skip(ncount * 8);
       break;
@@ -583,7 +558,7 @@ private:
 
   void require(std::size_t n) {
     if (n > remaining()) {
-      fail("truncated NBT data");
+      throw IncompleteDataError("truncated NBT data", pos_);
     }
   }
 
@@ -1522,6 +1497,10 @@ Tag parse(std::span<const std::byte> input, const ParseOptions &options) {
 
 Tag parse(const Buffer &input, const ParseOptions &options) {
   BufferInputStream stream(input);
+  return Reader(stream, options, nullptr).root();
+}
+
+Tag parse(InputStream &stream, const ParseOptions &options) {
   return Reader(stream, options, nullptr).root();
 }
 

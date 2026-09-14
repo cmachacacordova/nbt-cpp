@@ -3,9 +3,10 @@
 ## Project
 
 - `nbt-cpp` is a C++20 Java Edition NBT library.
-- Public API: `include/nbt/nbt.h`.
+- Public API: `include/nbt/nbt.h` (and the backward-compatible `include/nbt/nbt.hpp`).
 - Implementation: `src/nbt.cpp`.
 - Tests: `tests/nbt_tests.cpp`.
+- Public headers are split by concern: `buffer.h`, `type.h`, `tag.h`, `token.h`, `builder.h`, `error.h`, `stream.h`.
 - zlib is supplied through the `vcpkg.json` manifest.
 - The CMake package exports `nbt::nbt`; keep `find_package(nbt-cpp CONFIG REQUIRED)` working.
 - The overlay port is under `ports/nbt-cpp` and is validated through `VCPKG_OVERLAY_PORTS`.
@@ -24,6 +25,8 @@
 - `BinaryFormat::Network` implements Java 1.20.2+/protocol 764 Network NBT: root type byte `0x0A`, no root name length/name, and a mandatory root compound.
 - `BinaryFormat::File` retains the ordinary named-root representation.
 - Preserve binary round-trip and SNBT round-trip tests when changing the data model.
+- `IncompleteDataError` (derived from `Error`) is thrown for truncated input; malformed input still throws `Error`.
+- `StreamParser` supports incremental parsing from non-contiguous buffers; it keeps unconsumed bytes and allows trailing data by default.
 - Do not enable native CPU instructions by default; `NBT_CPP_NATIVE_ARCH` is opt-in.
 
 ## Build and verify

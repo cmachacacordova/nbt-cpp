@@ -12,18 +12,18 @@ namespace {
 nbt::Tag makeSampleRoot() {
   using namespace nbt;
   return compoundTag("root",
-                       {byteTag("byte", -7),
-                        shortTag("short", -300),
-                        intTag("int", 123456),
-                        longTag("long", INT64_C(0x1020304050607080)),
-                        floatTag("float", 1.25f),
-                        doubleTag("double", -4.5),
-                        stringTag("text", "hello"),
-                        byteArrayTag("bytes", {-1, 0, 1}),
-                        intArrayTag("ints", {-1, 2}),
-                        longArrayTag("longs", {-3, 4}),
-                        listTag("list", Type::Int, {intTag("", 1), intTag("", 2)}),
-                        compoundTag("nested", {stringTag("value", "ok")})});
+                     {byteTag("byte", -7),
+                      shortTag("short", -300),
+                      intTag("int", 123456),
+                      longTag("long", INT64_C(0x1020304050607080)),
+                      floatTag("float", 1.25f),
+                      doubleTag("double", -4.5),
+                      stringTag("text", "hello"),
+                      byteArrayTag("bytes", {-1, 0, 1}),
+                      intArrayTag("ints", {-1, 2}),
+                      longArrayTag("longs", {-3, 4}),
+                      listTag("list", Type::Int, {intTag("", 1), intTag("", 2)}),
+                      compoundTag("nested", {stringTag("value", "ok")})});
 }
 
 void testBufferBasics() {
@@ -277,6 +277,74 @@ void testErrorHandling() {
   assert(badGzip);
 }
 
+void testStreamParser() {
+  using namespace nbt;
+
+  const auto root = makeSampleRoot();
+  const auto fileBytes = serialize(root, BinaryFormat::File);
+
+  StreamParser emptyParser;
+  bool threwIncomplete = false;
+  try {
+    (void)emptyParser.parse();
+  } catch (const Error &) {
+    threwIncomplete = true;
+  }
+  assert(threwIncomplete);
+  assert(emptyParser.empty());
+
+  StreamParser fileParser;
+  std::optional<Tag> fileResult;
+  for (std::size_t i = 0; i < fileBytes.size(); ++i) {
+    fileResult = fileParser.tryParse();
+    assert(!fileResult);
+    fileParser.feed(std::span<const std::byte>{fileBytes.data() + i, 1});
+  }
+  fileResult = fileParser.tryParse();
+  assert(fileResult);
+  assert(equivalent(*fileResult, root));
+  assert(fileParser.empty());
+
+  const auto networkRoot = compoundTag("", {intTag("answer", 42)});
+  ParseOptions networkOptions;
+  networkOptions.format = BinaryFormat::Network;
+  const auto networkBytes = serialize(networkRoot, networkOptions.format);
+  StreamParser networkParser;
+  for (std::size_t i = 0; i < networkBytes.size(); ++i) {
+    assert(!networkParser.tryParse(networkOptions));
+    networkParser.feed(std::span<const std::byte>{networkBytes.data() + i, 1});
+  }
+  const auto networkResult = networkParser.parse(networkOptions);
+  assert(equivalent(networkResult, networkRoot));
+
+  StreamParser trailingParser;
+  const std::vector<std::byte> extra{std::byte{0x0A}, std::byte{0x00}, std::byte{0x00}};
+  trailingParser.feed(fileBytes.contiguous());
+  trailingParser.feed(extra);
+  const auto first = trailingParser.parse();
+  assert(equivalent(first, root));
+  assert(trailingParser.available() == extra.size());
+
+  StreamParser tokenParser;
+  for (std::size_t i = 0; i < fileBytes.size(); ++i) {
+    assert(!tokenParser.tryTokenize());
+    tokenParser.feed(std::span<const std::byte>{fileBytes.data() + i, 1});
+  }
+  const auto document = tokenParser.tokenize();
+  assert(!document.tokens.empty());
+
+  StreamParser badParser;
+  const std::byte bad[] = {std::byte{0xFF}, std::byte{0x00}, std::byte{0x00}};
+  badParser.feed(std::span<const std::byte>{bad, 3});
+  bool threwError = false;
+  try {
+    (void)badParser.tryParse();
+  } catch (const Error &) {
+    threwError = true;
+  }
+  assert(threwError);
+}
+
 } // namespace
 
 int main() {
@@ -297,6 +365,7 @@ int main() {
   testLevelDat();
   testNetworkSemantics();
   testErrorHandling();
+  testStreamParser();
 
   std::cout << "nbt-cpp tests passed\n";
 }

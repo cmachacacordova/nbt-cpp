@@ -212,6 +212,28 @@ public:
     return !(*this == other);
   }
 
+  void consume(std::size_t n) {
+    if (n >= size_) {
+      *this = Buffer{};
+      return;
+    }
+    size_ -= n;
+    while (n > 0 && head_ != nullptr) {
+      const auto available = head_->data.size();
+      if (n >= available) {
+        n -= available;
+        head_ = head_->next;
+      } else {
+        head_->data = head_->data.subspan(n);
+        n = 0;
+      }
+    }
+    if (head_ == nullptr) {
+      tail_.reset();
+    }
+    cache_.reset();
+  }
+
 private:
   void appendRing(const std::shared_ptr<Ring> &ring) {
     if (head_ == nullptr) {

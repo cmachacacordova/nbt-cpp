@@ -17,4 +17,10 @@ private:
   std::size_t offset_;
 };
 
+class NBT_CPP_API IncompleteDataError : public Error {
+public:
+  IncompleteDataError(std::string message, std::size_t offset) : Error(std::move(message), offset) {
+  }
+};
+
 } // namespace nbt
