@@ -84,9 +84,9 @@ private:
   std::size_t pos_{};
 };
 
-class ChainInputStream : public InputStream {
+class BufferInputStream : public InputStream {
 public:
-  explicit ChainInputStream(const BufferChain &chain) : chain_(chain), pos_(0), current_(chain.head()), offsetInChunk_(0) {
+  explicit BufferInputStream(const Buffer &buffer) : buffer_(buffer), pos_(0), current_(buffer.head()), offsetInChunk_(0) {
   }
 
   [[nodiscard]] std::size_t position() const override {
@@ -94,7 +94,7 @@ public:
   }
 
   [[nodiscard]] std::size_t remaining() const override {
-    return chain_.size() - pos_;
+    return buffer_.size() - pos_;
   }
 
   void require(std::size_t n) override {
@@ -138,9 +138,9 @@ private:
     }
   }
 
-  const BufferChain &chain_;
+  const Buffer &buffer_;
   std::size_t pos_{};
-  const BufferChain::Ring *current_{};
+  const Buffer::Ring *current_{};
   std::size_t offsetInChunk_{};
 };
 
@@ -613,7 +613,7 @@ public:
       number<std::uint8_t>(static_cast<std::uint8_t>(root.type));
       payload(root);
     }
-    return std::move(out_);
+    return Buffer{std::move(out_)};
   }
 
 private:
@@ -769,7 +769,7 @@ private:
     }
   }
 
-  Buffer out_;
+  std::vector<std::byte> out_;
 };
 
 std::vector<Tag> &children(Tag &tag) {
@@ -922,7 +922,7 @@ Buffer zcode(std::span<const std::byte> input, int window_bits, bool encode) {
   if (status != Z_OK) {
     throw std::runtime_error("zlib initialization failed");
   }
-  Buffer output;
+  std::vector<std::byte> output;
   std::byte block[4096];
   do {
     stream.next_out = reinterpret_cast<Bytef *>(block);
@@ -943,16 +943,16 @@ Buffer zcode(std::span<const std::byte> input, int window_bits, bool encode) {
   } else {
     inflateEnd(&stream);
   }
-  return output;
+  return Buffer{std::move(output)};
 }
 
-Buffer zcodeStream(const BufferChain &chain, int window_bits, bool encode) {
+Buffer zcodeStream(const Buffer &buffer, int window_bits, bool encode) {
   z_stream stream{};
   int status = encode ? deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, window_bits, 8, Z_DEFAULT_STRATEGY) : inflateInit2(&stream, window_bits);
   if (status != Z_OK) {
     throw std::runtime_error("zlib initialization failed");
   }
-  Buffer output;
+  std::vector<std::byte> output;
   std::byte block[4096];
 
   const auto cleanup = [&stream, encode]() {
@@ -964,7 +964,7 @@ Buffer zcodeStream(const BufferChain &chain, int window_bits, bool encode) {
   };
 
   try {
-    for (auto ring = chain.head(); ring != nullptr; ring = ring->next.get()) {
+    for (auto ring = buffer.head(); ring != nullptr; ring = ring->next.get()) {
       stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(ring->data.data()));
       stream.avail_in = static_cast<uInt>(ring->data.size());
       while (stream.avail_in > 0) {
@@ -978,7 +978,7 @@ Buffer zcodeStream(const BufferChain &chain, int window_bits, bool encode) {
         output.insert(output.end(), block, block + sizeof block - stream.avail_out);
         if (!encode && status == Z_STREAM_END) {
           cleanup();
-          return output;
+          return Buffer{std::move(output)};
         }
       }
     }
@@ -997,7 +997,7 @@ Buffer zcodeStream(const BufferChain &chain, int window_bits, bool encode) {
     throw;
   }
   cleanup();
-  return output;
+  return Buffer{std::move(output)};
 }
 
 class SnbtParser {
@@ -1520,8 +1520,8 @@ Tag parse(std::span<const std::byte> input, const ParseOptions &options) {
   return Reader(stream, options, nullptr).root();
 }
 
-Tag parse(const BufferChain &input, const ParseOptions &options) {
-  ChainInputStream stream(input);
+Tag parse(const Buffer &input, const ParseOptions &options) {
+  BufferInputStream stream(input);
   return Reader(stream, options, nullptr).root();
 }
 
@@ -1564,6 +1564,14 @@ Tag parse(std::span<const std::byte> input, const TokenizedView &document, const
   return parseTokenized(input, document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
 }
 
+Tag parse(const Buffer &input, const TokenizedDocument &document, const ParseOptions &options) {
+  return parseTokenized(input.contiguous(), document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
+}
+
+Tag parse(const Buffer &input, const TokenizedView &document, const ParseOptions &options) {
+  return parseTokenized(input.contiguous(), document.source, document.tokens, document.fingerprint, document.hasFingerprint, document.format, options);
+}
+
 Buffer serialize(const Tag &root, BinaryFormat format) {
   if (root.type == Type::End) {
     throw std::invalid_argument("TAG_End cannot be serialized as a root tag");
@@ -1575,16 +1583,10 @@ Buffer serialize(const Tag &root, BinaryFormat format) {
 }
 
 Buffer compress(std::span<const std::byte> input, Compression comp) {
-  if (comp == Compression::None) {
-    return {input.begin(), input.end()};
-  }
-  if (comp == Compression::Auto) {
-    throw std::invalid_argument("Auto is invalid for compression");
-  }
-  return zcode(input, comp == Compression::Gzip ? 31 : 15, true);
+  return compress(Buffer(input), comp);
 }
 
-Buffer compress(const BufferChain &input, Compression comp) {
+Buffer compress(const Buffer &input, Compression comp) {
   if (comp == Compression::None) {
     return input.flatten();
   }
@@ -1595,13 +1597,10 @@ Buffer compress(const BufferChain &input, Compression comp) {
 }
 
 Buffer decompress(std::span<const std::byte> input, Compression comp) {
-  if (comp == Compression::None) {
-    return {input.begin(), input.end()};
-  }
-  return zcode(input, comp == Compression::Gzip ? 31 : comp == Compression::Zlib ? 15 : 47, false);
+  return decompress(Buffer(input), comp);
 }
 
-Buffer decompress(const BufferChain &input, Compression comp) {
+Buffer decompress(const Buffer &input, Compression comp) {
   if (comp == Compression::None) {
     return input.flatten();
   }
