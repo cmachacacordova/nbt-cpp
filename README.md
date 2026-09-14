@@ -69,7 +69,7 @@ Consumers can set `CMAKE_PREFIX_PATH` to the install prefix and use the same `fi
 ## Parse directly or through tokens
 
 ```cpp
-#include <nbt/nbt.hpp>
+#include <nbt/nbt.h>
 
 nbt::Buffer input = /* uncompressed NBT bytes */;
 nbt::Tag direct = nbt::parse(input);
@@ -116,10 +116,10 @@ Use the default `BinaryFormat::File` for world, player and other persisted NBT d
 
 ```cpp
 nbt::Builder builder("root");
-builder.add(nbt::Tag::intTag("DataVersion", 3955))
+builder.add(nbt::intTag("DataVersion", 3955))
        .beginList("values", nbt::Type::String)
-       .add(nbt::Tag::string("", "one"))
-       .add(nbt::Tag::string("", "two"))
+       .add(nbt::stringTag("", "one"))
+       .add(nbt::stringTag("", "two"))
        .end();
 
 nbt::Tag root = builder.build();
@@ -160,7 +160,7 @@ Release builds enable IPO/LTO when supported. Portable CPU code remains the defa
 
 ## Utilities
 
-The public API in `include/nbt/nbt.hpp` includes:
+The public API in `include/nbt/nbt.h` includes:
 
 - `load`, `save`, `compress`, and `decompress` for raw, gzip, and zlib data.
 - `clone`, mutable/const `map`, `filter`, and `filterInPlace`.

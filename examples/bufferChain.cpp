@@ -7,7 +7,7 @@
 int main() {
   using namespace nbt;
 
-  const Tag root = Tag::compound("player", {Tag::string("name", "Alex"), Tag::shortTag("health", 20), Tag::intArray("pos", {10, 64, -5})});
+  const Tag root = compoundTag("player", {stringTag("name", "Alex"), shortTag("health", 20), intArrayTag("pos", {10, 64, -5})});
 
   const auto bytes = serialize(root);
   std::cout << "Serialized " << bytes.size() << " bytes\n";

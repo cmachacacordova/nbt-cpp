@@ -3,7 +3,7 @@
 #include "nbt/nbt.h"
 
 int main() {
-  const auto binary = nbt::serialize(nbt::Tag::compound("root", {nbt::Tag::shortTag("Health", 20), nbt::Tag::string("Name", "Alex"), nbt::Tag::intArray("Position", {10, 64, -5})}));
+  const auto binary = nbt::serialize(nbt::compoundTag("root", {nbt::shortTag("Health", 20), nbt::stringTag("Name", "Alex"), nbt::intArrayTag("Position", {10, 64, -5})}));
   const auto indexed = nbt::tokenize(binary);
   const auto health = indexed.get<nbt::Type::Short>("Health");
   const auto name = indexed.get<nbt::Type::String>("Name");

@@ -20,11 +20,6 @@
 
 namespace nbt {
 
-using Byte = std::int8_t;
-using ByteArray = std::vector<std::int8_t>;
-using IntArray = std::vector<std::int32_t>;
-using LongArray = std::vector<std::int64_t>;
-
 class Buffer {
 public:
   struct Ring {
@@ -78,7 +73,7 @@ public:
   }
 
   Buffer(const Buffer &other) : size_(other.size_) {
-    for (auto *ring = other.head(); ring != nullptr; ring = ring->next.get()) {
+    for (const auto *ring = other.head(); ring != nullptr; ring = ring->next.get()) {
       auto newRing = std::make_shared<Ring>();
       if (!ring->data.empty()) {
         auto owner = std::make_shared<std::vector<std::byte>>(ring->data.begin(), ring->data.end());
@@ -262,19 +257,45 @@ private:
   std::size_t offset_;
 };
 
-struct Tag;
-
-struct List {
-  std::vector<Tag> values;
-};
-
-struct Compound {
-  std::vector<Tag> values;
-};
-
-using Value = std::variant<std::monostate, Byte, std::int16_t, std::int32_t, std::int64_t, float, double, ByteArray, std::string, List, Compound, IntArray, LongArray>;
-
 struct NBT_CPP_API Tag {
+
+  using Byte = std::int8_t;
+  using Short = std::int16_t;
+  using Int = std::int32_t;
+  using Long = std::int64_t;
+  using Float = float;
+  using Double = double;
+  using String = std::string;
+  using ByteArray = std::vector<std::int8_t>;
+  using IntArray = std::vector<std::int32_t>;
+  using LongArray = std::vector<std::int64_t>;
+
+  struct List {
+    std::vector<Tag> values;
+
+    List() = default;
+
+    explicit List(std::vector<Tag> value) : values(std::move(value)) {
+    }
+
+    List(std::initializer_list<Tag> init) : values(init) {
+    }
+  };
+
+  struct Compound {
+    std::vector<Tag> values;
+
+    Compound() = default;
+
+    explicit Compound(std::vector<Tag> value) : values(std::move(value)) {
+    }
+
+    Compound(std::initializer_list<Tag> init) : values(init) {
+    }
+  };
+
+  using Value = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, List, Compound, ByteArray, IntArray, LongArray>;
+
   Type type{Type::End};
   std::string name;
   Value value;
@@ -282,19 +303,6 @@ struct NBT_CPP_API Tag {
 
   Tag() = default;
   Tag(Type type, std::string name, Value value, Type elementType = Type::End);
-
-  static Tag byte(std::string name, Byte value);
-  static Tag shortTag(std::string name, std::int16_t value);
-  static Tag intTag(std::string name, std::int32_t value);
-  static Tag longTag(std::string name, std::int64_t value);
-  static Tag floatTag(std::string name, float value);
-  static Tag doubleTag(std::string name, double value);
-  static Tag byteArray(std::string name, ByteArray value);
-  static Tag string(std::string name, std::string value);
-  static Tag list(std::string name, Type elementType, std::vector<Tag> value = {});
-  static Tag compound(std::string name, std::vector<Tag> value = {});
-  static Tag intArray(std::string name, IntArray value);
-  static Tag longArray(std::string name, LongArray value);
 
   template <class T>
   [[nodiscard]] T &as() {
@@ -306,6 +314,41 @@ struct NBT_CPP_API Tag {
     return std::get<T>(value);
   }
 };
+
+using Byte = Tag::Byte;
+[[nodiscard]] NBT_CPP_API Tag byteTag(std::string name, Byte value);
+
+using Short = Tag::Short;
+[[nodiscard]] NBT_CPP_API Tag shortTag(std::string name, Short value);
+
+using Int = Tag::Int;
+[[nodiscard]] NBT_CPP_API Tag intTag(std::string name, Int value);
+
+using Long = Tag::Long;
+[[nodiscard]] NBT_CPP_API Tag longTag(std::string name, Long value);
+
+using Float = Tag::Float;
+[[nodiscard]] NBT_CPP_API Tag floatTag(std::string name, Float value);
+
+using Double = Tag::Double;
+[[nodiscard]] NBT_CPP_API Tag doubleTag(std::string name, Double value);
+
+using String = Tag::String;
+[[nodiscard]] NBT_CPP_API Tag stringTag(std::string name, String value);
+
+using List = Tag::List;
+[[nodiscard]] NBT_CPP_API Tag listTag(std::string name, Type elementType, List value = {});
+using Compound = Tag::Compound;
+[[nodiscard]] NBT_CPP_API Tag compoundTag(std::string name, Compound value = {});
+
+using ByteArray = Tag::ByteArray;
+[[nodiscard]] NBT_CPP_API Tag byteArrayTag(std::string name, ByteArray value);
+
+using IntArray = Tag::IntArray;
+[[nodiscard]] NBT_CPP_API Tag intArrayTag(std::string name, IntArray value);
+
+using LongArray = Tag::LongArray;
+[[nodiscard]] NBT_CPP_API Tag longArrayTag(std::string name, LongArray value);
 
 struct Token {
   static constexpr std::uint32_t noParent = UINT32_MAX;

@@ -3,7 +3,7 @@
 ## Project
 
 - `nbt-cpp` is a C++20 Java Edition NBT library.
-- Public API: `include/nbt/nbt.hpp`.
+- Public API: `include/nbt/nbt.h`.
 - Implementation: `src/nbt.cpp`.
 - Tests: `tests/nbt_tests.cpp`.
 - zlib is supplied through the `vcpkg.json` manifest.

@@ -11,19 +11,19 @@ namespace {
 
 nbt::Tag makeSampleRoot() {
   using namespace nbt;
-  return Tag::compound("root",
-                       {Tag::byte("byte", -7),
-                        Tag::shortTag("short", -300),
-                        Tag::intTag("int", 123456),
-                        Tag::longTag("long", INT64_C(0x1020304050607080)),
-                        Tag::floatTag("float", 1.25f),
-                        Tag::doubleTag("double", -4.5),
-                        Tag::string("text", "hello"),
-                        Tag::byteArray("bytes", {-1, 0, 1}),
-                        Tag::intArray("ints", {-1, 2}),
-                        Tag::longArray("longs", {-3, 4}),
-                        Tag::list("list", Type::Int, {Tag::intTag("", 1), Tag::intTag("", 2)}),
-                        Tag::compound("nested", {Tag::string("value", "ok")})});
+  return compoundTag("root",
+                       {byteTag("byte", -7),
+                        shortTag("short", -300),
+                        intTag("int", 123456),
+                        longTag("long", INT64_C(0x1020304050607080)),
+                        floatTag("float", 1.25f),
+                        doubleTag("double", -4.5),
+                        stringTag("text", "hello"),
+                        byteArrayTag("bytes", {-1, 0, 1}),
+                        intArrayTag("ints", {-1, 2}),
+                        longArrayTag("longs", {-3, 4}),
+                        listTag("list", Type::Int, {intTag("", 1), intTag("", 2)}),
+                        compoundTag("nested", {stringTag("value", "ok")})});
 }
 
 void testBufferBasics() {
@@ -208,7 +208,7 @@ void testSnbt() {
 void testBuilderAndFileRoundTrip() {
   using namespace nbt;
   Builder builder("built");
-  builder.add(Tag::intTag("answer", 42)).beginList("items", Type::String).add(Tag::string("ignored", "a")).add(Tag::string("", "b")).end();
+  builder.add(intTag("answer", 42)).beginList("items", Type::String).add(stringTag("ignored", "a")).add(stringTag("", "b")).end();
   const auto built = builder.build();
   assert(equivalent(built, parse(serialize(built))));
 
@@ -246,7 +246,7 @@ void testNetworkSemantics() {
 
   bool rejected = false;
   try {
-    (void)serialize(Tag::intTag("", 1), BinaryFormat::Network);
+    (void)serialize(intTag("", 1), BinaryFormat::Network);
   } catch (const std::invalid_argument &) {
     rejected = true;
   }

@@ -7,7 +7,7 @@ int main() {
   using namespace nbt;
 
   // Network NBT: root must be a compound and has no name or root-name length.
-  const Tag root = Tag::compound("", {Tag::string("message", "hello"), Tag::byte("online", 1)});
+  const Tag root = compoundTag("", {stringTag("message", "hello"), byteTag("online", 1)});
   const auto networkBytes = serialize(root, BinaryFormat::Network);
 
   std::cout << "Network NBT starts with 0x" << std::hex << std::to_integer<unsigned>(networkBytes.front()) << std::dec << '\n';

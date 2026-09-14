@@ -240,22 +240,22 @@ private:
     Tag result;
     switch (tagType) {
     case Type::Byte:
-      result = Tag::byte(std::move(name), number<Byte>());
+      result = byteTag(std::move(name), number<Byte>());
       break;
     case Type::Short:
-      result = Tag::shortTag(std::move(name), number<std::int16_t>());
+      result = shortTag(std::move(name), number<std::int16_t>());
       break;
     case Type::Int:
-      result = Tag::intTag(std::move(name), number<std::int32_t>());
+      result = intTag(std::move(name), number<std::int32_t>());
       break;
     case Type::Long:
-      result = Tag::longTag(std::move(name), number<std::int64_t>());
+      result = longTag(std::move(name), number<std::int64_t>());
       break;
     case Type::Float:
-      result = Tag::floatTag(std::move(name), number<float>());
+      result = floatTag(std::move(name), number<float>());
       break;
     case Type::Double:
-      result = Tag::doubleTag(std::move(name), number<double>());
+      result = doubleTag(std::move(name), number<double>());
       break;
     case Type::ByteArray: {
       const auto ncount = count();
@@ -264,11 +264,11 @@ private:
       if (ncount > 0) {
         stream_.readBytes(reinterpret_cast<std::byte *>(values.data()), ncount);
       }
-      result = Tag::byteArray(std::move(name), std::move(values));
+      result = byteArrayTag(std::move(name), std::move(values));
       break;
     }
     case Type::String:
-      result = Tag::string(std::move(name), string());
+      result = stringTag(std::move(name), string());
       break;
     case Type::IntArray: {
       const auto ncount = count();
@@ -279,7 +279,7 @@ private:
       for (auto &value : values) {
         value = number<std::int32_t>();
       }
-      result = Tag::intArray(std::move(name), std::move(values));
+      result = intArrayTag(std::move(name), std::move(values));
       break;
     }
     case Type::LongArray: {
@@ -291,7 +291,7 @@ private:
       for (auto &value : values) {
         value = number<std::int64_t>();
       }
-      result = Tag::longArray(std::move(name), std::move(values));
+      result = longArrayTag(std::move(name), std::move(values));
       break;
     }
     case Type::List: {
@@ -308,7 +308,7 @@ private:
         values.push_back(payload(element, {}, child, depth + 1));
         finish(child, stream_.position());
       }
-      result = Tag::list(std::move(name), element, std::move(values));
+      result = listTag(std::move(name), element, List{std::move(values)});
       if (parent && (tokens_ != nullptr)) {
         (*tokens_)[*parent].count = static_cast<std::uint32_t>(ncount);
         (*tokens_)[*parent].elementType = element;
@@ -328,7 +328,7 @@ private:
         }
         values.push_back(named(parent, depth + 1));
       }
-      result = Tag::compound(std::move(name), std::move(values));
+      result = compoundTag(std::move(name), Compound{std::move(values)});
       break;
     }
     case Type::End:
@@ -1044,7 +1044,7 @@ private:
       return list(std::move(name), depth);
     }
     if (peek() == '\'' || peek() == '"') {
-      return Tag::string(std::move(name), quoted());
+      return stringTag(std::move(name), quoted());
     }
     auto text = bare();
     if (text.empty()) {
@@ -1058,7 +1058,7 @@ private:
     std::vector<Tag> values;
     space();
     if (accept('}')) {
-      return Tag::compound(std::move(name));
+      return compoundTag(std::move(name));
     }
     while (true) {
       if (values.size() >= options_.maxElements) {
@@ -1074,7 +1074,7 @@ private:
       }
       take(',');
     }
-    return Tag::compound(std::move(name), std::move(values));
+    return compoundTag(std::move(name), Compound{std::move(values)});
   }
 
   Tag list(std::string name, std::size_t depth) {
@@ -1085,7 +1085,7 @@ private:
     }
     std::vector<Tag> values;
     if (accept(']')) {
-      return Tag::list(std::move(name), Type::End);
+      return listTag(std::move(name), Type::End);
     }
     while (true) {
       if (values.size() >= options_.maxElements) {
@@ -1102,7 +1102,7 @@ private:
       take(',');
     }
     const auto elementType = values.front().type;
-    return Tag::list(std::move(name), elementType, std::move(values));
+    return listTag(std::move(name), elementType, List{std::move(values)});
   }
 
   Tag typedArray(std::string name) {
@@ -1112,7 +1112,7 @@ private:
     if (kind == 'B') {
       ByteArray out;
       if (accept(']')) {
-        return Tag::byteArray(std::move(name), {});
+        return byteArrayTag(std::move(name), {});
       }
       while (true) {
         auto tagVar = scalar({}, bare());
@@ -1126,12 +1126,12 @@ private:
         }
         take(',');
       }
-      return Tag::byteArray(std::move(name), std::move(out));
+      return byteArrayTag(std::move(name), std::move(out));
     }
     if (kind == 'I') {
       IntArray out;
       if (accept(']')) {
-        return Tag::intArray(std::move(name), {});
+        return intArrayTag(std::move(name), {});
       }
       while (true) {
         auto tVar = scalar({}, bare());
@@ -1145,11 +1145,11 @@ private:
         }
         take(',');
       }
-      return Tag::intArray(std::move(name), std::move(out));
+      return intArrayTag(std::move(name), std::move(out));
     }
     LongArray out;
     if (accept(']')) {
-      return Tag::longArray(std::move(name), {});
+      return longArrayTag(std::move(name), {});
     }
     while (true) {
       auto tVar = scalar({}, bare());
@@ -1163,16 +1163,16 @@ private:
       }
       take(',');
     }
-    return Tag::longArray(std::move(name), std::move(out));
+    return longArrayTag(std::move(name), std::move(out));
   }
 
   Tag scalar(std::string name, std::string_view text) {
     try {
       if (text == "true") {
-        return Tag::byte(std::move(name), 1);
+        return byteTag(std::move(name), 1);
       }
       if (text == "false") {
-        return Tag::byte(std::move(name), 0);
+        return byteTag(std::move(name), 0);
       }
       char suffix = static_cast<char>(std::tolower(static_cast<unsigned char>(text.back())));
       auto body = text;
@@ -1182,39 +1182,39 @@ private:
       std::string copy(body);
       std::size_t used{};
       if (suffix == 'f') {
-        return Tag::floatTag(std::move(name), std::stof(copy, &used));
+        return floatTag(std::move(name), std::stof(copy, &used));
       }
       if (suffix == 'd') {
-        return Tag::doubleTag(std::move(name), std::stod(copy, &used));
+        return doubleTag(std::move(name), std::stod(copy, &used));
       }
       if (copy.find_first_of(".eE") != std::string::npos) {
-        return Tag::doubleTag(std::move(name), std::stod(copy, &used));
+        return doubleTag(std::move(name), std::stod(copy, &used));
       }
       auto number = std::stoll(copy, &used, 10);
       if (used != copy.size()) {
-        return Tag::string(std::move(name), std::string(text));
+        return stringTag(std::move(name), std::string(text));
       }
       if (suffix == 'b') {
         if (number < INT8_MIN || number > INT8_MAX) {
           fail("byte out of range");
         }
-        return Tag::byte(std::move(name), static_cast<Byte>(number));
+        return byteTag(std::move(name), static_cast<Byte>(number));
       }
       if (suffix == 's') {
         if (number < INT16_MIN || number > INT16_MAX) {
           fail("short out of range");
         }
-        return Tag::shortTag(std::move(name), static_cast<std::int16_t>(number));
+        return shortTag(std::move(name), static_cast<std::int16_t>(number));
       }
       if (suffix == 'l') {
-        return Tag::longTag(std::move(name), number);
+        return longTag(std::move(name), number);
       }
       if (number < INT32_MIN || number > INT32_MAX) {
         fail("int out of range");
       }
-      return Tag::intTag(std::move(name), static_cast<std::int32_t>(number));
+      return intTag(std::move(name), static_cast<std::int32_t>(number));
     } catch (const std::invalid_argument &) {
-      return Tag::string(std::move(name), std::string(text));
+      return stringTag(std::move(name), std::string(text));
     } catch (const std::out_of_range &) {
       fail("numeric value out of range");
     }
@@ -1444,51 +1444,51 @@ std::int64_t LongArrayView::operator[](std::size_t index) const {
 Tag::Tag(Type type, std::string name, Value value, Type elementType) : type(type), name(std::move(name)), value(std::move(value)), elementType(elementType) {
 }
 
-Tag Tag::byte(std::string name, Byte value) {
+Tag byteTag(std::string name, Byte value) {
   return {Type::Byte, std::move(name), value};
 }
 
-Tag Tag::shortTag(std::string name, std::int16_t value) {
+Tag shortTag(std::string name, std::int16_t value) {
   return {Type::Short, std::move(name), value};
 }
 
-Tag Tag::intTag(std::string name, std::int32_t value) {
+Tag intTag(std::string name, std::int32_t value) {
   return {Type::Int, std::move(name), value};
 }
 
-Tag Tag::longTag(std::string name, std::int64_t value) {
+Tag longTag(std::string name, std::int64_t value) {
   return {Type::Long, std::move(name), value};
 }
 
-Tag Tag::floatTag(std::string name, float value) {
+Tag floatTag(std::string name, float value) {
   return {Type::Float, std::move(name), value};
 }
 
-Tag Tag::doubleTag(std::string name, double value) {
+Tag doubleTag(std::string name, double value) {
   return {Type::Double, std::move(name), value};
 }
 
-Tag Tag::byteArray(std::string name, ByteArray value) {
+Tag byteArrayTag(std::string name, ByteArray value) {
   return {Type::ByteArray, std::move(name), std::move(value)};
 }
 
-Tag Tag::string(std::string name, std::string value) {
+Tag stringTag(std::string name, std::string value) {
   return {Type::String, std::move(name), std::move(value)};
 }
 
-Tag Tag::list(std::string name, Type elementType, std::vector<Tag> value) {
-  return {Type::List, std::move(name), List{std::move(value)}, elementType};
+Tag listTag(std::string name, Type elementType, List value) {
+  return {Type::List, std::move(name), std::move(value), elementType};
 }
 
-Tag Tag::compound(std::string name, std::vector<Tag> value) {
-  return {Type::Compound, std::move(name), Compound{std::move(value)}};
+Tag compoundTag(std::string name, Compound value) {
+  return {Type::Compound, std::move(name), std::move(value)};
 }
 
-Tag Tag::intArray(std::string name, IntArray value) {
+Tag intArrayTag(std::string name, IntArray value) {
   return {Type::IntArray, std::move(name), std::move(value)};
 }
 
-Tag Tag::longArray(std::string name, LongArray value) {
+Tag longArrayTag(std::string name, LongArray value) {
   return {Type::LongArray, std::move(name), std::move(value)};
 }
 
@@ -1858,7 +1858,7 @@ std::string_view typeName(Type type) noexcept {
   return idx < std::size(names) ? names[idx] : "TAG_Unknown";
 }
 
-Builder::Builder(std::string name) : root_(Tag::compound(std::move(name))), stack_{&root_} {
+Builder::Builder(std::string name) : root_(compoundTag(std::move(name))), stack_{&root_} {
 }
 
 Builder &Builder::add(Tag tag) {
@@ -1876,14 +1876,14 @@ Builder &Builder::add(Tag tag) {
 }
 
 Builder &Builder::beginCompound(std::string name) {
-  add(Tag::compound(std::move(name)));
+  add(compoundTag(std::move(name)));
   auto &tags = children(*stack_.back());
   stack_.push_back(&tags.back());
   return *this;
 }
 
 Builder &Builder::beginList(std::string name, Type type) {
-  add(Tag::list(std::move(name), type));
+  add(listTag(std::move(name), type));
   auto &tags = children(*stack_.back());
   stack_.push_back(&tags.back());
   return *this;
