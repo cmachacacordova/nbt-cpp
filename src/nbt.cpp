@@ -1,15 +1,18 @@
-#include "nbt/nbt.hpp"
+#include "nbt/nbt.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <type_traits>
-#include <zlib.h>
+
+#include "zlib.h"
 
 namespace nbt {
 namespace {
@@ -25,9 +28,123 @@ std::uint64_t bufferFingerprint(std::span<const std::byte> data) noexcept {
   return hash;
 }
 
+class InputStream {
+public:
+  virtual ~InputStream() = default;
+
+  [[nodiscard]] virtual std::size_t position() const = 0;
+  [[nodiscard]] virtual std::size_t remaining() const = 0;
+  virtual void require(std::size_t n) = 0;
+  virtual void readBytes(std::byte *dest, std::size_t n) = 0;
+  [[nodiscard]] virtual std::byte peekByte() = 0;
+
+  std::byte readByte() {
+    std::byte value;
+    readBytes(&value, 1);
+    return value;
+  }
+};
+
+class SpanInputStream : public InputStream {
+public:
+  explicit SpanInputStream(std::span<const std::byte> data) : data_(data), pos_(0) {
+  }
+
+  [[nodiscard]] std::size_t position() const override {
+    return pos_;
+  }
+
+  [[nodiscard]] std::size_t remaining() const override {
+    return data_.size() - pos_;
+  }
+
+  void require(std::size_t n) override {
+    if (n > remaining()) {
+      fail("truncated NBT data");
+    }
+  }
+
+  void readBytes(std::byte *dest, std::size_t n) override {
+    require(n);
+    std::memcpy(dest, data_.data() + pos_, n);
+    pos_ += n;
+  }
+
+  [[nodiscard]] std::byte peekByte() override {
+    require(1);
+    return data_[pos_];
+  }
+
+private:
+  [[noreturn]] void fail(const char *message) const {
+    throw Error(message, pos_);
+  }
+
+  std::span<const std::byte> data_;
+  std::size_t pos_{};
+};
+
+class ChainInputStream : public InputStream {
+public:
+  explicit ChainInputStream(const BufferChain &chain) : chain_(chain), pos_(0), chunkIndex_(0), offsetInChunk_(0) {
+  }
+
+  [[nodiscard]] std::size_t position() const override {
+    return pos_;
+  }
+
+  [[nodiscard]] std::size_t remaining() const override {
+    return chain_.size() - pos_;
+  }
+
+  void require(std::size_t n) override {
+    if (n > remaining()) {
+      fail("truncated NBT data");
+    }
+  }
+
+  void readBytes(std::byte *dest, std::size_t n) override {
+    require(n);
+    while (n > 0) {
+      advanceChunk();
+      const auto chunk = chain_.chunk(chunkIndex_);
+      const auto available = chunk.size() - offsetInChunk_;
+      const auto take = std::min(available, n);
+      std::memcpy(dest, chunk.data() + offsetInChunk_, take);
+      offsetInChunk_ += take;
+      pos_ += take;
+      dest += take;
+      n -= take;
+    }
+  }
+
+  [[nodiscard]] std::byte peekByte() override {
+    require(1);
+    advanceChunk();
+    return chain_.chunk(chunkIndex_)[offsetInChunk_];
+  }
+
+private:
+  [[noreturn]] void fail(const char *message) const {
+    throw Error(message, pos_);
+  }
+
+  void advanceChunk() {
+    while (chunkIndex_ < chain_.chunkCount() && offsetInChunk_ >= chain_.chunk(chunkIndex_).size()) {
+      offsetInChunk_ = 0;
+      ++chunkIndex_;
+    }
+  }
+
+  const BufferChain &chain_;
+  std::size_t pos_{};
+  std::size_t chunkIndex_{};
+  std::size_t offsetInChunk_{};
+};
+
 class Reader {
 public:
-  Reader(std::span<const std::byte> data, const ParseOptions &options, std::vector<Token> *tokens) : data_(data), options_(options), tokens_(tokens) {
+  Reader(InputStream &stream, const ParseOptions &options, std::vector<Token> *tokens) : stream_(stream), options_(options), tokens_(tokens) {
   }
 
   Tag root() {
@@ -35,16 +152,16 @@ public:
     if (options_.format == BinaryFormat::File) {
       result = named(std::nullopt, 0);
     } else {
-      const auto begin = pos_;
+      const auto begin = stream_.position();
       const Type rootType = type();
       if (rootType != Type::Compound) {
         fail("Network NBT root must be TAG_Compound");
       }
       const auto token = push(TokenKind::Tag, rootType, begin, std::nullopt);
       result = payload(rootType, {}, token, 0);
-      finish(token, pos_);
+      finish(token, stream_.position());
     }
-    if (options_.requireCompleteInput && pos_ != data_.size()) {
+    if (options_.requireCompleteInput && stream_.remaining() != 0) {
       fail("trailing data");
     }
     return result;
@@ -54,11 +171,13 @@ private:
   template <class T>
   T number() {
     static_assert(std::is_arithmetic_v<T>);
-    require(sizeof(T));
+    stream_.require(sizeof(T));
     using U = std::conditional_t<sizeof(T) == 1, std::uint8_t, std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>>;
     U bits{};
+    std::array<std::byte, sizeof(T)> bytes;
+    stream_.readBytes(bytes.data(), sizeof(T));
     for (std::size_t i = 0; i < sizeof(T); ++i) {
-      bits = static_cast<U>((bits << 8) | std::to_integer<std::uint8_t>(data_[pos_++]));
+      bits = static_cast<U>((bits << 8) | std::to_integer<std::uint8_t>(bytes[i]));
     }
     if constexpr (std::is_floating_point_v<T>) {
       return std::bit_cast<T>(bits);
@@ -69,12 +188,11 @@ private:
 
   std::string string() {
     const auto length = number<std::uint16_t>();
-    require(length);
+    stream_.require(length);
     std::string result(length, '\0');
-    for (std::size_t i = 0; i < length; ++i) {
-      result[i] = static_cast<char>(data_[pos_ + i]);
+    if (length > 0) {
+      stream_.readBytes(reinterpret_cast<std::byte *>(result.data()), length);
     }
-    pos_ += length;
     return result;
   }
 
@@ -98,17 +216,17 @@ private:
   }
 
   Tag named(std::optional<std::size_t> parent, std::size_t depth) {
-    const auto begin = pos_;
+    const auto begin = stream_.position();
     const Type tagType = type();
     if (tagType == Type::End) {
       fail("TAG_End cannot be a named tag");
     }
     const auto token = push(TokenKind::Tag, tagType, begin, parent);
-    const auto nameBegin = pos_;
+    const auto nameBegin = stream_.position();
     std::string name = string();
-    pushDone(TokenKind::Name, tagType, nameBegin, pos_, token);
+    pushDone(TokenKind::Name, tagType, nameBegin, stream_.position(), token);
     Tag result = payload(tagType, std::move(name), token, depth);
-    finish(token, pos_);
+    finish(token, stream_.position());
     return result;
   }
 
@@ -116,7 +234,7 @@ private:
     if (depth > options_.maxDepth) {
       fail("depth limit exceeded");
     }
-    const auto begin = pos_;
+    const auto begin = stream_.position();
     Tag result;
     switch (tagType) {
     case Type::Byte:
@@ -139,10 +257,10 @@ private:
       break;
     case Type::ByteArray: {
       const auto ncount = count();
-      require(ncount);
+      stream_.require(ncount);
       ByteArray values(ncount);
-      for (auto &value : values) {
-        value = number<Byte>();
+      if (ncount > 0) {
+        stream_.readBytes(reinterpret_cast<std::byte *>(values.data()), ncount);
       }
       result = Tag::byteArray(std::move(name), std::move(values));
       break;
@@ -153,7 +271,7 @@ private:
     case Type::IntArray: {
       const auto ncount = count();
       IntArray values(ncount);
-      if (ncount > remaining() / 4) {
+      if (ncount > stream_.remaining() / 4) {
         fail("truncated int array");
       }
       for (auto &value : values) {
@@ -165,7 +283,7 @@ private:
     case Type::LongArray: {
       const auto ncount = count();
       LongArray values(ncount);
-      if (ncount > remaining() / 8) {
+      if (ncount > stream_.remaining() / 8) {
         fail("truncated long array");
       }
       for (auto &value : values) {
@@ -183,10 +301,10 @@ private:
       std::vector<Tag> values;
       values.reserve(ncount);
       for (std::size_t i = 0; i < ncount; ++i) {
-        const auto childBegin = pos_;
+        const auto childBegin = stream_.position();
         const auto child = push(TokenKind::Tag, element, childBegin, parent);
         values.push_back(payload(element, {}, child, depth + 1));
-        finish(child, pos_);
+        finish(child, stream_.position());
       }
       result = Tag::list(std::move(name), element, std::move(values));
       if (parent && (tokens_ != nullptr)) {
@@ -198,9 +316,9 @@ private:
     case Type::Compound: {
       std::vector<Tag> values;
       while (true) {
-        require(1);
-        if (std::to_integer<std::uint8_t>(data_[pos_]) == 0) {
-          ++pos_;
+        stream_.require(1);
+        if (std::to_integer<std::uint8_t>(stream_.peekByte()) == 0) {
+          stream_.readByte();
           break;
         }
         if (values.size() >= options_.maxElements) {
@@ -214,7 +332,7 @@ private:
     case Type::End:
       fail("unexpected TAG_End");
     }
-    pushDone(TokenKind::Payload, tagType, begin, pos_, parent);
+    pushDone(TokenKind::Payload, tagType, begin, stream_.position(), parent);
     return result;
   }
 
@@ -251,24 +369,13 @@ private:
     }
   }
 
-  void require(std::size_t n) {
-    if (n > remaining()) {
-      fail("truncated NBT data");
-    }
-  }
-
   [[noreturn]] void fail(std::string message) const {
-    throw Error(std::move(message), pos_);
+    throw Error(std::move(message), stream_.position());
   }
 
-  [[nodiscard]] std::size_t remaining() const {
-    return data_.size() - pos_;
-  }
-
-  std::span<const std::byte> data_;
+  InputStream &stream_;
   const ParseOptions &options_;
   std::vector<Token> *tokens_;
-  std::size_t pos_{};
 };
 
 class Tokenizer {
@@ -1353,7 +1460,13 @@ TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output
 }
 
 Tag parse(std::span<const std::byte> input, const ParseOptions &options) {
-  return Reader(input, options, nullptr).root();
+  SpanInputStream stream(input);
+  return Reader(stream, options, nullptr).root();
+}
+
+Tag parse(const BufferChain &input, const ParseOptions &options) {
+  ChainInputStream stream(input);
+  return Reader(stream, options, nullptr).root();
 }
 
 namespace {
@@ -1374,7 +1487,8 @@ Tag parseTokenized(std::span<const std::byte> input, std::span<const std::byte> 
   }
   auto parseOptions = options;
   parseOptions.format = format;
-  return Reader(input, parseOptions, nullptr).root();
+  SpanInputStream stream(input);
+  return Reader(stream, parseOptions, nullptr).root();
 }
 } // namespace
 
@@ -1419,6 +1533,10 @@ Buffer decompress(std::span<const std::byte> input, Compression comp) {
     return {input.begin(), input.end()};
   }
   return zcode(input, comp == Compression::Gzip ? 31 : comp == Compression::Zlib ? 15 : 47, false);
+}
+
+Buffer decompress(const BufferChain &input, Compression comp) {
+  return decompress(std::span<const std::byte>{input.flatten()}, comp);
 }
 
 Tag load(const std::filesystem::path &path, Compression comp, const ParseOptions &options) {

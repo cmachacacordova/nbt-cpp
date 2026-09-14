@@ -13,7 +13,7 @@
 #include <variant>
 #include <vector>
 
-#include "nbt/export.hpp"
+#include "nbt/export.h"
 
 namespace nbt {
 
@@ -23,11 +23,61 @@ using IntArray = std::vector<std::int32_t>;
 using LongArray = std::vector<std::int64_t>;
 using Buffer = std::vector<std::byte>;
 
+class BufferChain {
+public:
+  BufferChain() = default;
+
+  BufferChain &append(std::span<const std::byte> chunk) {
+    if (!chunk.empty()) {
+      chunks_.push_back(chunk);
+      totalSize_ += chunk.size();
+    }
+    return *this;
+  }
+
+  BufferChain &append(const void *data, std::size_t size) {
+    return append(std::span<const std::byte>{static_cast<const std::byte *>(data), size});
+  }
+
+  BufferChain &append(const Buffer &buffer) {
+    return append(std::span<const std::byte>{buffer});
+  }
+
+  [[nodiscard]] bool empty() const noexcept {
+    return totalSize_ == 0;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept {
+    return totalSize_;
+  }
+
+  [[nodiscard]] std::size_t chunkCount() const noexcept {
+    return chunks_.size();
+  }
+
+  [[nodiscard]] std::span<const std::byte> chunk(std::size_t index) const noexcept {
+    return index < chunks_.size() ? chunks_[index] : std::span<const std::byte>{};
+  }
+
+  [[nodiscard]] Buffer flatten() const {
+    Buffer result;
+    result.reserve(totalSize_);
+    for (const auto &entry : chunks_) {
+      result.insert(result.end(), entry.begin(), entry.end());
+    }
+    return result;
+  }
+
+private:
+  std::vector<std::span<const std::byte>> chunks_;
+  std::size_t totalSize_{};
+};
+
 enum class Type : std::uint8_t { End = 0, Byte = 1, Short = 2, Int = 3, Long = 4, Float = 5, Double = 6, ByteArray = 7, String = 8, List = 9, Compound = 10, IntArray = 11, LongArray = 12 };
 
-enum class Compression { None, Gzip, Zlib, Auto };
-enum class BinaryFormat { File, Network };
-enum class SourceValidation { Identity, Content, None };
+enum class Compression : std::uint8_t { None, Gzip, Zlib, Auto };
+enum class BinaryFormat : std::uint8_t { File, Network };
+enum class SourceValidation : std::uint8_t { Identity, Content, None };
 enum class TokenKind : std::uint8_t { Tag, Name, Payload };
 
 class NBT_CPP_API Error : public std::runtime_error {
@@ -322,6 +372,7 @@ TagView<T> TokenizedView::getPath(std::string_view path) const {
 [[nodiscard]] NBT_CPP_API TokenizedDocument tokenize(std::span<const std::byte> input, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API TokenizedView tokenize(std::span<const std::byte> input, std::span<Token> output, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API Tag parse(std::span<const std::byte> input, const ParseOptions &options = {});
+[[nodiscard]] NBT_CPP_API Tag parse(const BufferChain &input, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API Tag parse(const TokenizedDocument &document, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API Tag parse(const TokenizedView &document, const ParseOptions &options = {});
 [[nodiscard]] NBT_CPP_API Tag parse(std::span<const std::byte> input, const TokenizedDocument &document, const ParseOptions &options = {});
@@ -330,6 +381,7 @@ TagView<T> TokenizedView::getPath(std::string_view path) const {
 
 [[nodiscard]] NBT_CPP_API Buffer compress(std::span<const std::byte> input, Compression compression);
 [[nodiscard]] NBT_CPP_API Buffer decompress(std::span<const std::byte> input, Compression compression = Compression::Auto);
+[[nodiscard]] NBT_CPP_API Buffer decompress(const BufferChain &input, Compression compression = Compression::Auto);
 [[nodiscard]] NBT_CPP_API Tag load(const std::filesystem::path &path, Compression compression = Compression::Auto, const ParseOptions &options = {});
 NBT_CPP_API void save(const std::filesystem::path &path, const Tag &root, Compression compression = Compression::None);
 

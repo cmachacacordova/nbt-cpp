@@ -2,7 +2,7 @@
 #include <cassert>
 #include <iostream>
 
-#include "nbt/nbt.hpp"
+#include "nbt/nbt.h"
 
 int main() {
   using namespace nbt;
@@ -26,6 +26,35 @@ int main() {
   assert(equivalent(root, parse(bytes)));
   assert(equivalent(root, parse(tokens)));
   assert(equivalent(root, parse(bytes, tokens)));
+
+  {
+    BufferChain chain;
+    chain.append(std::span<const std::byte>{bytes.data(), 5})
+        .append(std::span<const std::byte>{bytes.data() + 5, bytes.size() - 10})
+        .append(std::span<const std::byte>{bytes.data() + bytes.size() - 5, 5});
+    assert(equivalent(root, parse(chain)));
+  }
+
+  {
+    const auto packed = compress(bytes, Compression::Gzip);
+    BufferChain chain;
+    chain.append(std::span<const std::byte>{packed.data(), packed.size() / 2})
+        .append(std::span<const std::byte>{packed.data() + packed.size() / 2, packed.size() - packed.size() / 2});
+    assert(decompress(chain, Compression::Auto) == bytes);
+  }
+
+  {
+    const auto networkBytes = serialize(root, BinaryFormat::Network);
+    BufferChain chain;
+    chain.append(std::span<const std::byte>{networkBytes.data(), 1})
+        .append(std::span<const std::byte>{networkBytes.data() + 1, networkBytes.size() - 1});
+    ParseOptions networkOptions;
+    networkOptions.format = BinaryFormat::Network;
+    Tag networkRoot = root;
+    networkRoot.name.clear();
+    assert(equivalent(networkRoot, parse(chain, networkOptions)));
+  }
+
   assert(tokens.get<Type::Short>("short").value() == -300);
   assert(tokens.get<Type::String>("text").value() == "hello");
   assert(tokens.get<Type::ByteArray>("bytes").value()[2] == 1);
