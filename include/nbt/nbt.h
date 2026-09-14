@@ -25,35 +25,50 @@ using IntArray = std::vector<std::int32_t>;
 using LongArray = std::vector<std::int64_t>;
 using Buffer = std::vector<std::byte>;
 
-// using Buffer = std::span<const std::byte>;
-
 class BufferChain {
 public:
   struct Ring {
     std::span<const std::byte> data;
     std::shared_ptr<Ring> next;
-    std::weak_ptr<Ring> last;
   };
 
   BufferChain() = default;
 
+  BufferChain(const BufferChain &other) {
+    appendFrom(other.head_);
+  }
+
+  BufferChain &operator=(const BufferChain &other) {
+    if (this != &other) {
+      head_.reset();
+      tail_.reset();
+      totalSize_ = 0;
+      appendFrom(other.head_);
+    }
+    return *this;
+  }
+
+  BufferChain(BufferChain &&) = default;
+  BufferChain &operator=(BufferChain &&) = default;
+
   BufferChain &append(std::span<const unsigned char> chunk) {
-    return this->append(std::span<const std::byte>(reinterpret_cast<const std::byte *>(chunk.data()), chunk.size()));
+    return append(std::as_bytes(chunk));
   }
 
   BufferChain &append(std::span<const std::byte> chunk) {
+    if (chunk.empty()) {
+      return *this;
+    }
     auto ring = std::make_shared<Ring>();
     ring->data = chunk;
     ring->next = nullptr;
-
-    if (this->chain_ == nullptr) {
-      this->chain_ = ring;
-    } else if (auto last = this->chain_->last.lock()) {
-      last->next = ring;
+    if (head_ == nullptr) {
+      head_ = tail_ = ring;
+    } else {
+      tail_->next = ring;
+      tail_ = ring;
     }
-
-    this->chain_->last = ring;
-    this->totalSize_ += chunk.size();
+    totalSize_ += chunk.size();
     return *this;
   }
 
@@ -74,29 +89,30 @@ public:
   }
 
   [[nodiscard]] const Ring *head() const noexcept {
-    return chain_.get();
+    return head_.get();
   }
 
   [[nodiscard]] Buffer flatten() const {
     Buffer result;
-    auto ring = this->chain_;
-
-    if (ring == nullptr) {
+    if (totalSize_ == 0) {
       return result;
     }
-
     result.reserve(totalSize_);
-
-    do {
+    for (auto *ring = head_.get(); ring != nullptr; ring = ring->next.get()) {
       result.insert(result.end(), ring->data.begin(), ring->data.end());
-      ring = ring->next;
-    } while (ring != nullptr);
-
+    }
     return result;
   }
 
 private:
-  std::shared_ptr<Ring> chain_;
+  void appendFrom(const std::shared_ptr<Ring> &head) {
+    for (auto *ring = head.get(); ring != nullptr; ring = ring->next.get()) {
+      append(ring->data);
+    }
+  }
+
+  std::shared_ptr<Ring> head_;
+  std::shared_ptr<Ring> tail_;
   std::size_t totalSize_{};
 };
 
