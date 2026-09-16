@@ -1,15 +1,12 @@
 #include <iostream>
+#include <sstream>
 
 #include "nbt/nbt.h"
 
 int main() {
-  try {
-    const auto root = nbt::parseSnbt(R"({name:"Steve",health:20s,enabled:true,position:[1.5d,64.0d,-3.0d]})");
-    const auto binary = nbt::serialize(root);
-    const auto restored = nbt::parse(binary);
-    std::cout << "Binary bytes: " << binary.size() << '\n' << nbt::toSnbt(restored, true) << '\n';
-  } catch (const std::exception &error) {
-    std::cerr << "Error: " << error.what() << '\n';
-    return 1;
-  }
+  const auto root = nbt::parseSnbt("{answer:42}");
+  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+  nbt::serialize(stream, root);
+  stream.seekg(0);
+  std::cout << nbt::toSnbt(nbt::parse(stream), true) << '\n';
 }

@@ -1,31 +1,14 @@
 #include <cassert>
-#include <iostream>
+#include <sstream>
 
 #include "nbt/nbt.h"
 
 int main() {
-  using namespace nbt;
-
-  // Network NBT: root must be a compound and has no name or root-name length.
-  const Tag root = compoundTag("", {stringTag("message", "hello"), byteTag("online", 1)});
-  const auto networkBytes = serialize(root, BinaryFormat::Network);
-
-  std::cout << "Network NBT starts with 0x" << std::hex << std::to_integer<unsigned>(networkBytes.front()) << std::dec << '\n';
-  std::cout << "Size: " << networkBytes.size() << " bytes\n";
-
-  ParseOptions networkOptions;
-  networkOptions.format = BinaryFormat::Network;
-  const auto parsed = parse(networkBytes, networkOptions);
-  std::cout << "Parsed network root: " << toSnbt(parsed, false) << '\n';
-
-  // Split the packet into tiny chunks and parse again.
-  Buffer chain;
-  for (std::size_t i = 0; i < networkBytes.size(); ++i) {
-    chain.append(std::span<const std::byte>{networkBytes.data() + i, 1});
-  }
-  const auto parsedFromChain = parse(chain, networkOptions);
-  assert(equivalent(parsed, parsedFromChain));
-  std::cout << "Parsed from one-byte chain successfully\n";
-
-  return 0;
+  const auto root = nbt::compoundTag("", {nbt::intTag("answer", 42)});
+  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+  nbt::serialize(stream, root, nbt::BinaryFormat::Network);
+  stream.seekg(0);
+  nbt::ParseOptions options;
+  options.format = nbt::BinaryFormat::Network;
+  assert(nbt::equivalent(root, nbt::parse(stream, options)));
 }

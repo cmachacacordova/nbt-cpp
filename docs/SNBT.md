@@ -16,4 +16,4 @@ Supported values include compounds, homogeneous lists, quoted and unquoted strin
 [L;1L,-2L]
 ```
 
-SNBT parsing builds an owning tree and is separate from binary zero-copy tokenization. `ParseOptions::maxDepth` and `maxElements` apply to SNBT parsing.
+SNBT parsing builds an owning tree and is separate from binary stream tokenization. `ParseOptions::maxDepth` and `maxElements` apply to SNBT parsing.

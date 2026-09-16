@@ -1,8 +1,16 @@
 # nbt-cpp
 
-Modern C++20 library for Java Edition Named Binary Tag data. It combines a zero-copy token index over an input buffer with an owning tree model, direct parsing, parsing validated against tokens, binary writing, gzip/zlib support, builders, traversal, search, filtering and SNBT output.
+Modern C++ library for Java Edition NBT. Binary input and output use the standard `std::istream` and `std::ostream` interfaces, including file, memory, network, and custom stream buffers.
 
-All standard tags are supported: `TAG_End`, numeric tags, `TAG_Byte_Array`, `TAG_String`, `TAG_List`, `TAG_Compound`, `TAG_Int_Array`, and `TAG_Long_Array`. Binary data uses the Java Edition big-endian representation. Strings preserve their encoded bytes; validation or conversion of Java's modified UTF-8 is left to the caller.
+## Features
+
+- Owning NBT tree model and builder.
+- Binary File NBT and Java 1.20.2+ Network NBT.
+- Stream-based parsing, token indexing, serialization, gzip, and zlib.
+- Incremental parsing for seekable streams through `tryParse`.
+- SNBT parsing and serialization.
+- Traversal, filtering, search, cloning, and comparison utilities.
+- Static/shared builds, CMake package export, and vcpkg manifest.
 
 ## Build
 
@@ -12,195 +20,91 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The library target is `nbt::nbt`; zlib is the only dependency.
-
-## Static and shared builds
-
-By default CMake builds a static library. Build a shared library with:
-
-```sh
-cmake -S . -B build -DBUILD_SHARED_LIBS=ON
-```
-
-With vcpkg the linkage follows `VCPKG_LIBRARY_LINKAGE` (`static` or `dynamic`):
-
-```sh
-vcpkg install nbt-cpp:x64-windows --overlay-ports=ports        # dynamic
-vcpkg install nbt-cpp:x64-windows-static --overlay-ports=ports  # static
-```
-
-Windows consumers of a shared build must place `nbt-cpp.dll` on `PATH` or next to the executable. The public API uses standard C++ types, so the library and the consumer must be built with the same C++20 ABI and MSVC runtime library to avoid ODR mismatches.
-
-## Install with vcpkg
-
-Use the included overlay port:
-
-```sh
-vcpkg install nbt-cpp --overlay-ports=ports
-```
-
-In manifest mode, add `nbt-cpp` to the consumer's `vcpkg.json` and configure with:
-
-```sh
-cmake -S . -B build \
-  -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake \
-  -DVCPKG_OVERLAY_PORTS=/path/to/nbt-cpp/ports
-```
-
-Consume the installed package with:
-
-```cmake
-find_package(nbt-cpp CONFIG REQUIRED)
-target_link_libraries(application PRIVATE nbt::nbt)
-```
-
-The current port is reproducibly pinned to a GitHub commit and uses Git/SSH, so private repository access follows the user's configured SSH credentials.
-
-## Install as a CMake package
-
-```sh
-cmake -S . -B build -DNBT_CPP_BUILD_TESTS=OFF -DNBT_CPP_BUILD_EXAMPLES=OFF
-cmake --build build --config Release
-cmake --install build --config Release --prefix install
-```
-
-Consumers can set `CMAKE_PREFIX_PATH` to the install prefix and use the same `find_package` and target shown above.
-
-## Parse directly or through tokens
+## Parse and serialize
 
 ```cpp
+#include <fstream>
 #include <nbt/nbt.h>
 
-nbt::Buffer input = /* uncompressed NBT bytes */;
-nbt::Tag direct = nbt::parse(input);
+std::ifstream input("level.dat", std::ios::binary);
+nbt::Tag root = nbt::parse(input);
 
-nbt::TokenizedDocument document = nbt::tokenize(input);
-nbt::Tag checked = nbt::parse(document);
+std::ofstream output("copy.dat", std::ios::binary);
+nbt::serialize(output, root);
 ```
 
-Tokens retain byte ranges, parent indexes, subtree boundaries, list count, and list element type without copying names or payloads. Tokenization has a dedicated scanner: it never constructs a `Tag`, string, or payload array. Compact 32-bit tokens occupy at most 24 bytes and support buffers up to 4 GiB.
-
-`TokenizedDocument` binds the source span and token vector. The default `SourceValidation::Identity` has no full-buffer hashing cost: `parse(document)` uses the bound span, while `parse(input, document)` checks pointer and size in `O(1)`. Content hashing is available only through opt-in `SourceValidation::Content`; `SourceValidation::None` is the explicit unchecked mode.
-
-Caller-owned token storage remains allocation-free:
+For in-memory data, use standard string streams:
 
 ```cpp
-std::vector<nbt::Token> storage(4096);
-nbt::TokenizedView view = nbt::tokenize(input, storage);
-nbt::Tag tree = nbt::parse(view);
+std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+nbt::serialize(stream, root);
+stream.seekg(0);
+nbt::Tag copy = nbt::parse(stream);
 ```
 
-The tokenized document can also be queried without building a tree:
+## Compressed files
+
+Compression is intentionally outside the NBT API. The caller supplies a stream that already exposes uncompressed bytes. For gzip or zlib files, `zstr` can provide that stream:
 
 ```cpp
-auto health = document.get<nbt::Type::Short>("Health");
-std::int16_t value = health.value();
-auto nested = document.getPath<nbt::Type::String>("root.player.name");
+zstr::ifstream input("level.dat", std::ios::binary);
+nbt::Tag root = nbt::parse(input);
+
+zstr::ofstream output("copy.dat", std::ios::binary);
+nbt::serialize(output, root);
 ```
 
-These typed views allocate nothing. Strings and byte arrays reference the source directly, while int/long arrays decode endian values lazily.
+This keeps parsing and serialization independent from files and compression formats. Applications may use `zstr`, another compression library, a socket-backed `std::streambuf`, or ordinary standard streams.
 
-`ParseOptions` provides depth and collection-size limits and can permit trailing protocol bytes with `requireCompleteInput = false`. For Java Edition Network NBT since 1.20.2 (protocol 764), explicitly select `BinaryFormat::Network`. This requires a root `TAG_Compound`, writes or reads its `0x0A` type byte, and omits the root name length and name entirely:
+For filesystem convenience, `load` and `save` support uncompressed, gzip, and zlib NBT files:
+
+```cpp
+nbt::Tag root = nbt::load("level.dat");
+nbt::save("copy.dat", root, nbt::Compression::Gzip);
+```
+
+These are the only public APIs that handle compression; generic stream compression remains outside the library.
+
+## Incremental input
+
+`tryParse` restores the read position and returns `std::nullopt` when a seekable stream does not yet contain a complete document. Malformed input still throws `nbt::Error`; truncated input throws `nbt::IncompleteDataError` from `parse`.
+
+```cpp
+auto result = nbt::tryParse(stream);
+if (!result) {
+  // Append more data to the stream and retry.
+}
+```
+
+A non-seekable stream should use `parse`; its `std::streambuf` is responsible for blocking until requested bytes are available. This is the normal model for socket-backed streams.
+
+## Network NBT
 
 ```cpp
 nbt::ParseOptions options;
 options.format = nbt::BinaryFormat::Network;
-auto tokens = nbt::tokenize(packet_nbt, options);
-nbt::Tag root = nbt::parse(packet_nbt, tokens, options);
-nbt::Buffer encoded = nbt::serialize(root, nbt::BinaryFormat::Network);
+nbt::Tag root = nbt::parse(input, options);
+nbt::serialize(output, root, nbt::BinaryFormat::Network);
 ```
 
-Use the default `BinaryFormat::File` for world, player and other persisted NBT data. Pre-1.20.2 protocol NBT with an empty root name also uses `BinaryFormat::File`, because its two-byte zero name length is still present.
+Network NBT requires an unnamed root compound and omits the root name field.
 
-## Streaming parser
-
-Data arriving from a network socket can be fed incrementally without flattening the buffer chain. `StreamParser` keeps unconsumed bytes, so a partial NBT can resume as soon as more data arrives.
+## Tokenization
 
 ```cpp
-#include <nbt/nbt.h>
-
-nbt::StreamParser parser;
-parser.feed(std::span<const std::byte>{chunk.data(), chunk.size()});
-
-// Non-throwing: returns std::nullopt while the document is still incomplete.
-if (auto root = parser.tryParse()) {
-  use(*root);
-}
-
-// Throwing version: raises nbt::IncompleteDataError (derived from nbt::Error)
-// when the input ends in the middle of a tag.
-nbt::Tag root = parser.parse();
+auto document = nbt::tokenize(input);
 ```
 
-`tryParse` returns `std::nullopt` for any incomplete document, including a truncated root name, payload or child list. Malformed data still throws `nbt::Error`. `StreamParser::tokenize` and `tryTokenize` provide the same behavior for tokenized output. By default `StreamParser` allows trailing bytes (it sets `requireCompleteInput = false`), so multiple NBT documents can be pulled from the same stream.
+Tokens contain stream-relative offsets and structural metadata only. They do not retain a source buffer or pointer and therefore require no source identity/content validation. `encodedSize(root, format)` calculates the serialized size from a tree, while `encodedSize(document)` reads it from the indexed root token.
 
-Files already arrive as complete blobs, so `load` and `parse` do not need a streaming API. The streaming helpers are intended for sockets and similar byte streams where the caller cannot know when a full NBT document will be available.
+## Public headers
 
-## Build and serialize
+- `nbt/nbt.h` and compatibility header `nbt/nbt.hpp` — complete API.
+- `nbt/type.h` — enums.
+- `nbt/error.h` — exceptions.
+- `nbt/tag.h` — tree model and tag factories.
+- `nbt/token.h` — token and parse option types.
+- `nbt/builder.h` — tree builder.
+- `nbt/stream.h` — stream parsing and tokenization.
 
-```cpp
-nbt::Builder builder("root");
-builder.add(nbt::intTag("DataVersion", 3955))
-       .beginList("values", nbt::Type::String)
-       .add(nbt::stringTag("", "one"))
-       .add(nbt::stringTag("", "two"))
-       .end();
-
-nbt::Tag root = builder.build();
-nbt::Buffer binary = nbt::serialize(root);
-nbt::save("data.nbt", root, nbt::Compression::Gzip);
-```
-
-## SNBT
-
-```cpp
-nbt::Tag tree = nbt::parseSnbt(R"({name:"Steve",health:20s,pos:[1.0d,64.0d,-3.5d]})");
-std::string text = nbt::toSnbt(tree, true);
-```
-
-The parser supports quoted and unquoted strings, escapes, compounds, homogeneous lists, typed byte/int/long arrays, numeric suffixes, exponents, and boolean byte values.
-
-## Examples
-
-Examples are built by default with `NBT_CPP_BUILD_EXAMPLES=ON`:
-
-```sh
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/Workspace/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
-```
-
-Generated executables:
-
-- `nbt-read-gzip [path]`: loads a gzip NBT file and prints its complete SNBT representation. Without a path it uses `tests/level.dat`.
-- `nbt-query-views`: demonstrates typed zero-copy queries.
-- `nbt-build`: builds and serializes an NBT tree.
-- `nbt-snbt`: parses SNBT, serializes it to binary and prints the restored tree.
-
-Disable them with `-DNBT_CPP_BUILD_EXAMPLES=OFF`.
-
-## Optimized builds
-
-Release builds enable IPO/LTO when supported. Portable CPU code remains the default. Use `-DNBT_CPP_NATIVE_ARCH=ON` for `/arch:AVX2` on MSVC or `-march=native -mtune=native` on GCC/Clang when the resulting binary only needs to run on the build machine or a compatible CPU.
-
-## Utilities
-
-The public API is provided through `include/nbt/nbt.h`, which includes:
-
-- `nbt/buffer.h` — polymorphic contiguous/fragmented `Buffer`.
-- `nbt/type.h` — NBT and format enumerations.
-- `nbt/tag.h` — `Tag`, its value types, and factory functions.
-- `nbt/token.h` — tokenization, `TokenizedDocument`/`TokenizedView`, and typed zero-copy views.
-- `nbt/builder.h` — checked nested `Builder`.
-- `nbt/error.h` — `Error` and `IncompleteDataError` exceptions.
-- `nbt/stream.h` — `StreamParser` for incremental network streams.
-
-The umbrella header exposes utilities such as `load`, `save`, `compress`, `decompress`, `clone`, `map`, `filter`, `findByName`, `findByPath`, `size`, `equivalent`, `parseSnbt`, `toSnbt`, and tag factories.
-
-Malformed lengths, unknown types, truncation, invalid list metadata, excess depth, trailing bytes (when enforced), and mismatched token sources produce `nbt::Error`, including the failing input offset. Truncated stream data raises `nbt::IncompleteDataError`, which derives from `nbt::Error` so existing catch clauses remain valid.
-
-## Documentation
-
-- [Tokenization and source validation](docs/TOKENS.md)
-- [Typed zero-copy views](docs/VIEWS.md)
-- [File and Network binary formats](docs/BINARY_FORMATS.md)
-- [SNBT](docs/SNBT.md)
+See `docs/BINARY_FORMATS.md`, `docs/TOKENS.md`, and `docs/SNBT.md` for details.

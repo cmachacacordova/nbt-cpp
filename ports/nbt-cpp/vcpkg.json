@@ -1,11 +1,11 @@
 {
   "name": "nbt-cpp",
   "version-string": "0.1.0",
-  "description": "Modern C++20 library for Java Edition NBT with zero-copy indexing, owning parsing, SNBT and Network NBT support",
+  "description": "Modern C++ Java Edition NBT library using standard streams, owning parsing, token indexing, SNBT and Network NBT",
   "homepage": "https://github.com/cmachacacordova/nbt-cpp",
   "license": "MIT",
   "dependencies": [
-    "zlib",
+    "zstr",
     {
       "name": "vcpkg-cmake",
       "host": true

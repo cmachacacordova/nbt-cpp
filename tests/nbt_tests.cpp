@@ -1,11 +1,14 @@
-#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 #include "nbt/nbt.h"
+
+#include "zstr.hpp"
 
 namespace {
 
@@ -26,346 +29,117 @@ nbt::Tag makeSampleRoot() {
                       compoundTag("nested", {stringTag("value", "ok")})});
 }
 
-void testBufferBasics() {
-  using namespace nbt;
-
-  Buffer empty;
-  assert(empty.empty());
-  assert(empty.size() == 0);
-  assert(empty.head() == nullptr);
-  assert(empty.contiguous().empty());
-
-  Buffer sized(5, std::byte{0xAB});
-  assert(sized.size() == 5);
-  assert(std::to_integer<unsigned>(sized.front()) == 0xAB);
-  assert(std::to_integer<unsigned>(sized[4]) == 0xAB);
-
-  const std::vector<std::byte> raw{std::byte{1}, std::byte{2}, std::byte{3}};
-  Buffer copied(raw);
-  assert(copied.size() == 3);
-  assert(std::to_integer<int>(copied[0]) == 1);
-
-  Buffer moved(std::vector<std::byte>{std::byte{4}, std::byte{5}});
-  assert(moved.size() == 2);
-  assert(std::to_integer<int>(moved[0]) == 4);
-
-  Buffer view(std::span<const std::byte>{raw});
-  assert(view == copied);
-
-  Buffer chain;
-  chain.append(std::span<const std::byte>{raw.data(), 1}).append(std::span<const std::byte>{raw.data() + 1, 1}).append(std::span<const std::byte>{raw.data() + 2, 1});
-  assert(chain.size() == 3);
-  assert(!chain.isContiguous());
-  assert(chain == copied);
-  assert(chain.flatten() == copied);
-
-  Buffer copy = chain;
-  assert(copy == chain);
-
-  Buffer appended;
-  appended.append(copied);
-  appended.append(chain);
-  assert(appended.size() == 6);
-
-  const std::uint8_t rawBytes[] = {0x10, 0x20, 0x30};
-  Buffer fromBytes(rawBytes, sizeof(rawBytes));
-  assert(fromBytes.size() == 3);
-  assert(std::to_integer<unsigned>(fromBytes[2]) == 0x30);
+std::string serialize(const nbt::Tag &root, nbt::BinaryFormat format = nbt::BinaryFormat::File) {
+  std::ostringstream output(std::ios::binary);
+  nbt::serialize(output, root, format);
+  return output.str();
 }
 
-void testBufferChainParsing() {
+nbt::Tag parse(const std::string &data, const nbt::ParseOptions &options = {}) {
+  std::istringstream input(data, std::ios::binary);
+  return nbt::parse(input, options);
+}
+
+void testBinaryStreams() {
   using namespace nbt;
-  const Tag root = makeSampleRoot();
+  const auto root = makeSampleRoot();
   const auto bytes = serialize(root);
-
-  Buffer chain;
-  chain.append(std::span<const std::byte>{bytes.data(), 5}).append(std::span<const std::byte>{bytes.data() + 5, bytes.size() - 10}).append(std::span<const std::byte>{bytes.data() + bytes.size() - 5, 5});
-  assert(equivalent(root, parse(chain)));
-
-  Buffer emptyChunks;
-  emptyChunks.append(std::span<const std::byte>{bytes.data(), 3}).append(std::span<const std::byte>{bytes.data() + 3, std::size_t{0}}).append(std::span<const std::byte>{bytes.data() + 3, 1});
-  assert(emptyChunks.size() == 4);
-}
-
-void testBufferChainCompression() {
-  using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto bytes = serialize(root);
-
-  for (Compression compression : {Compression::Gzip, Compression::Zlib}) {
-    const auto packed = compress(bytes, compression);
-    assert(decompress(packed, Compression::Auto) == bytes);
-
-    Buffer chain;
-    for (std::size_t i = 0; i < packed.size(); ++i) {
-      chain.append(std::span<const std::byte>{packed.data() + i, 1});
-    }
-    assert(chain.size() == packed.size());
-    assert(decompress(chain, compression) == bytes);
-    assert(decompress(chain, Compression::Auto) == bytes);
-  }
-
-  assert(decompress(compress(bytes, Compression::None), Compression::None) == bytes);
-
-  Buffer empty;
-  assert(compress(empty, Compression::None).empty());
-}
-
-void testNetworkBufferChain() {
-  using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto networkBytes = serialize(root, BinaryFormat::Network);
-
-  Buffer chain;
-  chain.append(std::span<const std::byte>{networkBytes.data(), 1}).append(std::span<const std::byte>{networkBytes.data() + 1, networkBytes.size() - 1});
-
-  ParseOptions networkOptions;
-  networkOptions.format = BinaryFormat::Network;
-  Tag networkRoot = root;
-  networkRoot.name.clear();
-  assert(equivalent(networkRoot, parse(chain, networkOptions)));
-}
-
-void testTokenizationAndViews() {
-  using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto bytes = serialize(root);
-  const auto tokens = tokenize(bytes.contiguous());
-
-  assert(tokens.tokens.front().type == Type::Compound);
   assert(equivalent(root, parse(bytes)));
-  assert(equivalent(root, parse(tokens)));
-  assert(equivalent(root, parse(bytes, tokens)));
 
-  assert(tokens.get<Type::Short>("short").value() == -300);
-  assert(tokens.get<Type::String>("text").value() == "hello");
-  assert(tokens.get<Type::ByteArray>("bytes").value()[2] == 1);
-  assert(tokens.get<Type::IntArray>("ints").value()[1] == 2);
-  assert(tokens.get<Type::LongArray>("longs").value()[0] == -3);
-  assert(tokens.get<Type::List>("list").at<Type::Int>(1).value() == 2);
-  assert(tokens.get<Type::Compound>("nested").get<Type::String>("value").value() == "ok");
-  assert(tokens.getPath<Type::String>("root.nested.value").value() == "ok");
-  assert(!tokens.find<Type::Int>("missing"));
-
-  std::vector<Token> storage(tokens.tokens.size());
-  const auto view = tokenize(bytes.contiguous(), storage);
-  assert(view.tokens.size() == tokens.tokens.size());
-  assert(std::equal(view.tokens.begin(), view.tokens.end(), tokens.tokens.begin()));
+  std::istringstream tokenInput(bytes, std::ios::binary);
+  const auto document = tokenize(tokenInput);
+  assert(!document.tokens.empty());
+  assert(document.tokens.front().type == Type::Compound);
+  assert(encodedSize(root) == bytes.size());
+  assert(encodedSize(document) == bytes.size());
   static_assert(sizeof(Token) <= 24);
 }
 
-void testSourceValidation() {
+void testNetworkStreams() {
   using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto bytes = serialize(root);
-  const auto tokens = tokenize(bytes.contiguous());
-
-  const Buffer copied = bytes;
-  bool rejectedIdentity = false;
-  try {
-    (void)parse(copied, tokens);
-  } catch (const Error &) {
-    rejectedIdentity = true;
-  }
-  assert(rejectedIdentity);
-
-  ParseOptions contentOptions;
-  contentOptions.sourceValidation = SourceValidation::Content;
-  const auto contentTokens = tokenize(bytes.contiguous(), contentOptions);
-  assert(equivalent(root, parse(copied, contentTokens, contentOptions)));
-
-  Buffer mutated = bytes;
-  const auto payload = std::find_if(tokens.tokens.begin(), tokens.tokens.end(), [](const Token &token) {
-    return token.kind == TokenKind::Payload && token.type == Type::Byte;
-  });
-  assert(payload != tokens.tokens.end());
-  mutated[payload->begin] ^= std::byte{0x01};
-
-  bool rejectedMutated = false;
-  try {
-    (void)parse(mutated, tokens);
-  } catch (const Error &) {
-    rejectedMutated = true;
-  }
-  assert(rejectedMutated);
-
-  ParseOptions uncheckedOptions;
-  uncheckedOptions.sourceValidation = SourceValidation::None;
-  const auto uncheckedRoot = parse(mutated, tokens, uncheckedOptions);
-  assert(uncheckedRoot.as<Compound>().values.front().as<Byte>() != root.as<Compound>().values.front().as<Byte>());
+  auto root = makeSampleRoot();
+  const auto bytes = serialize(root, BinaryFormat::Network);
+  ParseOptions options;
+  options.format = BinaryFormat::Network;
+  root.name.clear();
+  assert(encodedSize(root, BinaryFormat::Network) == bytes.size());
+  assert(equivalent(root, parse(bytes, options)));
+  assert(static_cast<unsigned char>(bytes.front()) == 0x0a);
 }
 
-void testSnbt() {
+void testIncrementalParsing() {
   using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto snbt = toSnbt(root, false);
-  assert(equivalent(root, parseSnbt(snbt)));
-
-  const auto parsed = parseSnbt("{enabled:true,bytes:[B;1b,-2b],ints:[I;1,-2],longs:[L;1L,-2L],items:[\"a\",\"b\"]}");
-  assert(findByName(parsed, "enabled")->as<Byte>() == 1);
+  const auto bytes = serialize(makeSampleRoot());
+  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+  stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size() / 2));
+  stream.seekg(0);
+  assert(!tryParse(stream));
+  assert(stream.tellg() == std::streampos{0});
+  stream.clear();
+  stream.seekp(0, std::ios::end);
+  stream.write(bytes.data() + bytes.size() / 2, static_cast<std::streamsize>(bytes.size() - bytes.size() / 2));
+  stream.seekg(0);
+  const auto result = tryParse(stream);
+  assert(result && equivalent(*result, makeSampleRoot()));
 }
 
-void testBuilderAndFileRoundTrip() {
+void testSnbtAndUtilities() {
   using namespace nbt;
-  Builder builder("built");
-  builder.add(intTag("answer", 42)).beginList("items", Type::String).add(stringTag("ignored", "a")).add(stringTag("", "b")).end();
-  const auto built = builder.build();
-  assert(equivalent(built, parse(serialize(built))));
-
-  const auto tmp = std::filesystem::temp_directory_path() / "nbt-cpp-test.dat";
-  save(tmp, built, Compression::Gzip);
-  const auto loaded = load(tmp, Compression::Gzip);
-  assert(equivalent(built, loaded));
-  std::filesystem::remove(tmp);
-}
-
-void testLevelDat() {
-  using namespace nbt;
-  const std::filesystem::path levelPath = std::filesystem::path(NBT_CPP_TEST_DATA_DIR) / "level.dat";
-  const auto gzipLevel = load(levelPath, Compression::Gzip);
-  const auto detectedLevel = load(levelPath, Compression::Auto);
-  assert(gzipLevel.type == Type::Compound);
-  assert(size(gzipLevel) > 1);
-  assert(equivalent(gzipLevel, detectedLevel));
-  std::cout << "Loaded gzip level.dat (" << size(gzipLevel) << " tags)\n";
-}
-
-void testNetworkSemantics() {
-  using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto networkBytes = serialize(root, BinaryFormat::Network);
-
-  ParseOptions networkOptions;
-  networkOptions.format = BinaryFormat::Network;
-  Tag networkRoot = root;
-  networkRoot.name.clear();
-  assert(equivalent(networkRoot, parse(networkBytes, networkOptions)));
-  assert(!tokenize(networkBytes.contiguous(), networkOptions).tokens.empty());
-  assert(networkBytes.front() == std::byte{0x0a});
-  assert(networkBytes[1] == std::byte{0x01});
-
-  bool rejected = false;
-  try {
-    (void)serialize(intTag("", 1), BinaryFormat::Network);
-  } catch (const std::invalid_argument &) {
-    rejected = true;
-  }
-  assert(rejected);
-}
-
-void testErrorHandling() {
-  using namespace nbt;
-  const Tag root = makeSampleRoot();
-  const auto bytes = serialize(root);
-
-  bool truncated = false;
-  try {
-    (void)parse(std::span<const std::byte>(bytes.data(), bytes.size() - 1));
-  } catch (const Error &) {
-    truncated = true;
-  }
-  assert(truncated);
-
-  bool badGzip = false;
-  try {
-    Buffer bad;
-    bad.append(std::span<const std::byte>{bytes.data(), bytes.size()});
-    (void)decompress(bad, Compression::Gzip);
-  } catch (const std::runtime_error &) {
-    badGzip = true;
-  }
-  assert(badGzip);
-}
-
-void testStreamParser() {
-  using namespace nbt;
-
   const auto root = makeSampleRoot();
-  const auto fileBytes = serialize(root, BinaryFormat::File);
+  assert(equivalent(root, parseSnbt(toSnbt(root, false))));
+  assert(size(root) == 16);
+  assert(findByPath(root, "root.nested.value")->as<std::string>() == "ok");
 
-  StreamParser emptyParser;
-  bool threwIncomplete = false;
+  Builder builder("built");
+  builder.add(intTag("answer", 42)).beginList("items", Type::String).add(stringTag("", "a")).end();
+  assert(equivalent(builder.build(), parse(serialize(builder.build()))));
+}
+
+void testFiles() {
+  using namespace nbt;
+  const auto temporary = std::filesystem::temp_directory_path() / "nbt-cpp-test.dat";
+  {
+    zstr::ofstream output(temporary.string(), std::ios::binary);
+    serialize(output, makeSampleRoot());
+  }
+  {
+    zstr::ifstream input(temporary.string(), std::ios::binary);
+    assert(equivalent(nbt::parse(input), makeSampleRoot()));
+  }
+  save(temporary, makeSampleRoot());
+  assert(equivalent(load(temporary, Compression::None), makeSampleRoot()));
+  save(temporary, makeSampleRoot(), Compression::Gzip);
+  assert(equivalent(load(temporary), makeSampleRoot()));
+  save(temporary, makeSampleRoot(), Compression::Zlib);
+  assert(equivalent(load(temporary), makeSampleRoot()));
+  std::filesystem::remove(temporary);
+
+  const auto levelPath = std::filesystem::path(NBT_CPP_TEST_DATA_DIR) / "level.dat";
+  zstr::ifstream input(levelPath.string(), std::ios::binary);
+  assert(nbt::parse(input).type == Type::Compound);
+}
+
+void testErrors() {
+  using namespace nbt;
+  auto bytes = serialize(makeSampleRoot());
+  bytes.pop_back();
+  bool incomplete = false;
   try {
-    (void)emptyParser.parse();
-  } catch (const Error &) {
-    threwIncomplete = true;
+    (void)parse(bytes);
+  } catch (const IncompleteDataError &) {
+    incomplete = true;
   }
-  assert(threwIncomplete);
-  assert(emptyParser.empty());
-
-  StreamParser fileParser;
-  std::optional<Tag> fileResult;
-  for (std::size_t i = 0; i < fileBytes.size(); ++i) {
-    fileResult = fileParser.tryParse();
-    assert(!fileResult);
-    fileParser.feed(std::span<const std::byte>{fileBytes.data() + i, 1});
-  }
-  fileResult = fileParser.tryParse();
-  assert(fileResult);
-  assert(equivalent(*fileResult, root));
-  assert(fileParser.empty());
-
-  const auto networkRoot = compoundTag("", {intTag("answer", 42)});
-  ParseOptions networkOptions;
-  networkOptions.format = BinaryFormat::Network;
-  const auto networkBytes = serialize(networkRoot, networkOptions.format);
-  StreamParser networkParser;
-  for (std::size_t i = 0; i < networkBytes.size(); ++i) {
-    assert(!networkParser.tryParse(networkOptions));
-    networkParser.feed(std::span<const std::byte>{networkBytes.data() + i, 1});
-  }
-  const auto networkResult = networkParser.parse(networkOptions);
-  assert(equivalent(networkResult, networkRoot));
-
-  StreamParser trailingParser;
-  const std::vector<std::byte> extra{std::byte{0x0A}, std::byte{0x00}, std::byte{0x00}};
-  trailingParser.feed(fileBytes.contiguous());
-  trailingParser.feed(extra);
-  const auto first = trailingParser.parse();
-  assert(equivalent(first, root));
-  assert(trailingParser.available() == extra.size());
-
-  StreamParser tokenParser;
-  for (std::size_t i = 0; i < fileBytes.size(); ++i) {
-    assert(!tokenParser.tryTokenize());
-    tokenParser.feed(std::span<const std::byte>{fileBytes.data() + i, 1});
-  }
-  const auto document = tokenParser.tokenize();
-  assert(!document.tokens.empty());
-
-  StreamParser badParser;
-  const std::byte bad[] = {std::byte{0xFF}, std::byte{0x00}, std::byte{0x00}};
-  badParser.feed(std::span<const std::byte>{bad, 3});
-  bool threwError = false;
-  try {
-    (void)badParser.tryParse();
-  } catch (const Error &) {
-    threwError = true;
-  }
-  assert(threwError);
+  assert(incomplete);
 }
 
 } // namespace
 
 int main() {
-  using namespace nbt;
-  assert(size(makeSampleRoot()) == 16);
-  assert(findByName(makeSampleRoot(), "value")->as<std::string>() == "ok");
-  assert(findByPath(makeSampleRoot(), "root.nested.value")->as<std::string>() == "ok");
-  assert(at(*findByName(makeSampleRoot(), "list"), 1)->as<std::int32_t>() == 2);
-
-  testBufferBasics();
-  testBufferChainParsing();
-  testBufferChainCompression();
-  testNetworkBufferChain();
-  testTokenizationAndViews();
-  testSourceValidation();
-  testSnbt();
-  testBuilderAndFileRoundTrip();
-  testLevelDat();
-  testNetworkSemantics();
-  testErrorHandling();
-  testStreamParser();
-
+  testBinaryStreams();
+  testNetworkStreams();
+  testIncrementalParsing();
+  testSnbtAndUtilities();
+  testFiles();
+  testErrors();
   std::cout << "nbt-cpp tests passed\n";
 }

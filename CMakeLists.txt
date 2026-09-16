@@ -7,6 +7,7 @@ option(NBT_CPP_ENABLE_IPO "Enable interprocedural optimization in Release builds
 option(NBT_CPP_NATIVE_ARCH "Optimize for the build machine CPU" OFF)
 
 find_package(ZLIB REQUIRED)
+find_path(ZSTR_INCLUDE_DIRS "zstr.hpp" REQUIRED)
 
 add_library(nbt-cpp src/nbt.cpp)
 add_library(nbt::nbt ALIAS nbt-cpp)
@@ -17,9 +18,12 @@ if(BUILD_SHARED_LIBS)
     target_compile_definitions(nbt-cpp PRIVATE NBT_CPP_EXPORTS PUBLIC NBT_CPP_SHARED)
 endif()
 target_compile_features(nbt-cpp PUBLIC cxx_std_20)
-target_include_directories(nbt-cpp PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
+target_include_directories(nbt-cpp
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${ZSTR_INCLUDE_DIRS})
 target_link_libraries(nbt-cpp PRIVATE ZLIB::ZLIB)
 
 if(MSVC)
@@ -47,18 +51,19 @@ if(NBT_CPP_BUILD_EXAMPLES)
     add_executable(nbt-query-views examples/queryViews.cpp)
     add_executable(nbt-build examples/buildNbt.cpp)
     add_executable(nbt-snbt examples/snbt.cpp)
-    add_executable(nbt-buffer-chain examples/bufferChain.cpp)
+    add_executable(nbt-stream examples/bufferChain.cpp)
     add_executable(nbt-network examples/networkNbt.cpp)
-    target_link_libraries(nbt-read-gzip PRIVATE nbt::nbt)
+    target_include_directories(nbt-read-gzip PRIVATE ${ZSTR_INCLUDE_DIRS})
+    target_link_libraries(nbt-read-gzip PRIVATE nbt::nbt ZLIB::ZLIB)
     target_link_libraries(nbt-query-views PRIVATE nbt::nbt)
     target_link_libraries(nbt-build PRIVATE nbt::nbt)
     target_link_libraries(nbt-snbt PRIVATE nbt::nbt)
-    target_link_libraries(nbt-buffer-chain PRIVATE nbt::nbt)
+    target_link_libraries(nbt-stream PRIVATE nbt::nbt)
     target_link_libraries(nbt-network PRIVATE nbt::nbt)
     target_compile_definitions(nbt-read-gzip PRIVATE
         NBT_CPP_EXAMPLE_LEVEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/level.dat")
     if(NBT_CPP_ENABLE_IPO AND NBT_CPP_IPO_SUPPORTED)
-        foreach(exampleTarget IN ITEMS nbt-read-gzip nbt-query-views nbt-build nbt-snbt nbt-buffer-chain nbt-network)
+        foreach(exampleTarget IN ITEMS nbt-read-gzip nbt-query-views nbt-build nbt-snbt nbt-stream nbt-network)
             set_property(TARGET ${exampleTarget} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         endforeach()
     endif()
@@ -67,7 +72,8 @@ endif()
 if(NBT_CPP_BUILD_TESTS)
     enable_testing()
     add_executable(nbt-cpp-tests tests/nbt_tests.cpp)
-    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt)
+    target_include_directories(nbt-cpp-tests PRIVATE ${ZSTR_INCLUDE_DIRS})
+    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt ZLIB::ZLIB)
     target_compile_definitions(nbt-cpp-tests PRIVATE
         NBT_CPP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")
     if(NBT_CPP_ENABLE_IPO AND NBT_CPP_IPO_SUPPORTED)

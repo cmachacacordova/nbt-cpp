@@ -1,12 +1,13 @@
-#include <iostream>
+#include <cassert>
+#include <sstream>
 
 #include "nbt/nbt.h"
 
 int main() {
-  const auto binary = nbt::serialize(nbt::compoundTag("root", {nbt::shortTag("Health", 20), nbt::stringTag("Name", "Alex"), nbt::intArrayTag("Position", {10, 64, -5})}));
-  const auto indexed = nbt::tokenize(binary);
-  const auto health = indexed.get<nbt::Type::Short>("Health");
-  const auto name = indexed.get<nbt::Type::String>("Name");
-  const auto position = indexed.get<nbt::Type::IntArray>("Position").value();
-  std::cout << "Name: " << name.value() << '\n' << "Health: " << health.value() << '\n' << "Position: " << position[0] << ", " << position[1] << ", " << position[2] << '\n';
+  const auto root = nbt::compoundTag("player", {nbt::intTag("health", 20)});
+  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+  nbt::serialize(stream, root);
+  stream.seekg(0);
+  const auto tokens = nbt::tokenize(stream);
+  assert(!tokens.tokens.empty());
 }

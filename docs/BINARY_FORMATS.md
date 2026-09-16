@@ -1,34 +1,23 @@
-# Binary NBT formats
+# Binary formats
 
 ## File NBT
 
-`BinaryFormat::File` is the default and represents persisted Java Edition NBT:
+File NBT contains a root type, root name length/name, and payload.
 
-```text
-Type ID | unsigned 16-bit name length | name bytes | payload
+```cpp
+nbt::Tag root = nbt::parse(input);
+nbt::serialize(output, root);
 ```
-
-Use it for world, player and standalone NBT files. Network NBT before Java 1.20.2 also uses this representation, normally with an empty root name encoded as `00 00`.
 
 ## Network NBT
 
-Since Java 1.20.2, protocol 764, Network NBT removes the root compound name and its length entirely:
-
-```text
-0A | compound payload
-```
-
-Select it explicitly:
+Java 1.20.2+/protocol 764 Network NBT begins with `TAG_Compound` (`0x0A`), omits the root name, and requires a compound root.
 
 ```cpp
 nbt::ParseOptions options;
 options.format = nbt::BinaryFormat::Network;
-
-auto tokens = nbt::tokenize(packet_nbt, options);
-auto root = nbt::parse(packet_nbt, tokens, options);
-auto encoded = nbt::serialize(root, nbt::BinaryFormat::Network);
+auto root = nbt::parse(input, options);
+nbt::serialize(output, root, nbt::BinaryFormat::Network);
 ```
 
-Network mode requires the root type to be `TAG_Compound`. Nested tags retain their standard names and encoding. This setting does not include packet framing, packet lengths, compression thresholds or protocol fields surrounding the NBT value.
-
-All Java Edition numeric values and lengths are big-endian. `TAG_List` children have no individual type IDs or names because the list header supplies their type.
+Both formats operate directly on `std::istream` and `std::ostream`.

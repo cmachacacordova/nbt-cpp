@@ -74,9 +74,9 @@ IncludeBlocks: Regroup
 IncludeCategories:
   - Regex:    '^<.*>'
     Priority: 1
-  - Regex: '^"[^/\\"]+_exports\.h"$'
+  - Regex: '^"export\.h"$'
     Priority: 2
-  - Regex:    '^"(async|chat|commands|core|crypto|http|io|logger|minecraft|pipes|plugin|protocol|proxy|redis|types|utils)/'
+  - Regex:    '^"(nbt)/'
     Priority: 3
   - Regex:    '^".*"'
     Priority: 4

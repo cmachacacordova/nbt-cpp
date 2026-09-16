@@ -1,5 +1,5 @@
-# Created by https://www.toptal.com/developers/gitignore/api/c,c++,java,cmake,linux,macos,ninja,xcode,windows,visualstudio,visualstudiocode,intellij,eclipse,executable
-# Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,java,cmake,linux,macos,ninja,xcode,windows,visualstudio,visualstudiocode,intellij,eclipse,executable
+# Created by https://www.toptal.com/developers/gitignore/api/c,c++,java,cmake,linux,macos,ninja,xcode,eclipse,windows,intellij,executable,visualstudio,visualstudiocode,doxygen
+# Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,java,cmake,linux,macos,ninja,xcode,eclipse,windows,intellij,executable,visualstudio,visualstudiocode,doxygen
 
 ### C ###
 # Prerequisites
@@ -92,6 +92,10 @@ CMakeUserPresets.json
 
 # External projects
 *-prefix/
+
+### Doxygen ###
+html
+latex
 
 ### Eclipse ###
 .metadata
@@ -804,8 +808,7 @@ FodyWeavers.xsd
 ### VisualStudio Patch ###
 # Additional files built by Visual Studio
 
-# End of https://www.toptal.com/developers/gitignore/api/c,c++,java,cmake,linux,macos,ninja,xcode,windows,visualstudio,visualstudiocode,intellij,eclipse,executable
-
+# End of https://www.toptal.com/developers/gitignore/api/c,c++,java,cmake,linux,macos,ninja,xcode,eclipse,windows,intellij,executable,visualstudio,visualstudiocode,doxygen
 /build*/
 .package-test/
 .port-test/
