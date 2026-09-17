@@ -9,12 +9,8 @@ vcpkg_cmake_configure(
     OPTIONS
         -DNBT_CPP_BUILD_TESTS=OFF
         -DNBT_CPP_BUILD_EXAMPLES=OFF
-        -DNBT_CPP_ENABLE_IPO=OFF
 )
 vcpkg_cmake_install()
-
-file(WRITE "${CURRENT_PACKAGES_DIR}/lib/cmake/nbt-cpp/nbt-cpp-config.cmake"
-"include(CMakeFindDependencyMacro)\nfind_dependency(ZLIB)\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/nbt-cpp-targets.cmake\")\n")
 file(GLOB targetFiles
     "${CURRENT_PACKAGES_DIR}/lib/cmake/nbt-cpp/*.cmake"
     "${CURRENT_PACKAGES_DIR}/debug/lib/cmake/nbt-cpp/*.cmake"

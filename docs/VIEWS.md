@@ -1,5 +1,7 @@
-# Token metadata
+# Lazy views
 
-The stream API intentionally does not expose byte-backed typed views. A generic `std::istream` does not guarantee contiguous or persistent storage, so returning `std::string_view`, spans, or pointers into source data would be unsafe.
+`Nbt::root()` returns a lightweight `Nbt::View`. Names, strings, scalar values and arrays are decoded when their accessors are called.
 
-Use `tokenize` for structural offsets and `parse` when typed values are required.
+A view is valid only while its originating `Nbt` object remains alive, unmoved, and attached to the same input. For borrowed input, the caller must also keep the complete byte range alive and unchanged.
+
+Call `View::materialize()` to create an owning value subtree, or `Nbt::materialize()` for the complete document.

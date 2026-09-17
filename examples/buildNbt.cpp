@@ -1,12 +1,7 @@
-#include <iostream>
-#include <sstream>
-
 #include "nbt/nbt.h"
 
 int main() {
-  nbt::Builder builder("root");
-  builder.add(nbt::intTag("answer", 42));
-  std::ostringstream output(std::ios::binary);
-  nbt::serialize(output, builder.build());
-  std::cout << output.str().size() << " bytes\n";
+  using Nbt = nbt::Nbt;
+  Nbt document(Nbt::compound("root", {Nbt::int32("answer", 42), Nbt::string("name", "Alex")}));
+  return document.encode().empty() ? 1 : 0;
 }

@@ -1,3 +1,14 @@
+/**
+ * @file export.h
+ * @author Carlos Machaca (carloscordova96@hotmail.com)
+ * @brief
+ * @version 0.1
+ * @date 2026-09-16
+ *
+ * @copyright Copyright (c) 2026
+ *
+ */
+
 #pragma once
 
 #if defined(_WIN32) && defined(NBT_CPP_SHARED)

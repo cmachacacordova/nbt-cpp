@@ -1,19 +1,13 @@
-# SNBT
+# SNBT utilities
 
-Parse and emit stringified NBT with:
+SNBT is separated from the binary codec:
 
 ```cpp
-nbt::Tag root = nbt::parseSnbt(R"({name:"Alex",health:20s,enabled:true})");
-std::string compact = nbt::toSnbt(root, false);
-std::string pretty = nbt::toSnbt(root, true);
+#include <nbt/utilities.h>
+
+auto value = nbt::NbtUtilities::parseSnbt("{name:\"Alex\",health:20s}");
+auto compact = nbt::NbtUtilities::toSnbt(value);
+auto pretty = nbt::NbtUtilities::toSnbt(value, true);
 ```
 
-Supported values include compounds, homogeneous lists, quoted and unquoted strings, booleans represented as bytes, numeric suffixes, decimal/exponent notation and typed arrays:
-
-```snbt
-[B;1b,-2b]
-[I;1,-2]
-[L;1L,-2L]
-```
-
-SNBT parsing builds an owning tree and is separate from binary stream tokenization. `ParseOptions::maxDepth` and `maxElements` apply to SNBT parsing.
+The parser supports compounds, homogeneous lists, quoted and unquoted strings, booleans, numeric suffixes and typed byte/int/long arrays. It applies depth and per-container limits from `Nbt::Options`.

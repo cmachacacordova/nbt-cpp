@@ -1,14 +1,14 @@
-#include <cassert>
-#include <sstream>
-
 #include "nbt/nbt.h"
 
 int main() {
-  const auto root = nbt::compoundTag("", {nbt::intTag("answer", 42)});
-  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
-  nbt::serialize(stream, root, nbt::BinaryFormat::Network);
-  stream.seekg(0);
-  nbt::ParseOptions options;
-  options.format = nbt::BinaryFormat::Network;
-  assert(nbt::equivalent(root, nbt::parse(stream, options)));
+  using Nbt = nbt::Nbt;
+  Nbt source(Nbt::compound("", {Nbt::int32("answer", 42)}));
+  const auto bytes = source.encode(Nbt::Format::Network);
+  Nbt::Options options;
+  options.format = Nbt::Format::Network;
+  Nbt decoded;
+  if (decoded.borrow(bytes, options) != Nbt::Status::Complete) {
+    return 1;
+  }
+  return decoded.root().find("answer").asInt32() == 42 ? 0 : 1;
 }

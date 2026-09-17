@@ -1,13 +1,15 @@
-#include <cassert>
-#include <sstream>
-
 #include "nbt/nbt.h"
 
 int main() {
-  const auto root = nbt::compoundTag("player", {nbt::intTag("health", 20)});
-  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
-  nbt::serialize(stream, root);
-  stream.seekg(0);
-  const auto tokens = nbt::tokenize(stream);
-  assert(!tokens.tokens.empty());
+  using Nbt = nbt::Nbt;
+  const auto bytes = Nbt(Nbt::compound("player", {Nbt::int32("health", 20), Nbt::string("name", "Alex")})).encode();
+  Nbt document;
+  if (document.borrow(bytes) != Nbt::Status::Complete) {
+    return 1;
+  }
+  const auto health = document.root().find("health");
+  if (!health || health.asInt32() != 20) {
+    return 1;
+  }
+  return health.beginOffset() < health.endOffset() ? 0 : 1;
 }

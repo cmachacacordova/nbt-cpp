@@ -1,11 +1,11 @@
 {
   "name": "nbt-cpp",
-  "version-string": "0.1.0",
-  "description": "Modern C++ Java Edition NBT library using standard streams, owning parsing, token indexing, SNBT and Network NBT",
+  "version-string": "0.2.0",
+  "description": "Header-only C++23 lazy Java Edition NBT codec with optional SNBT and compression utilities",
   "homepage": "https://github.com/cmachacacordova/nbt-cpp",
   "license": "MIT",
   "dependencies": [
-    "zstr",
+    "zlib",
     {
       "name": "vcpkg-cmake",
       "host": true

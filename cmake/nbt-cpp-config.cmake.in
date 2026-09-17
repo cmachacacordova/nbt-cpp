@@ -1,7 +1,6 @@
 @PACKAGE_INIT@
 
-include(CMakeFindDependencyMacro)
-find_dependency(ZLIB)
+@NBT_CPP_CONFIG_FIND_ZLIB@
 
 include("${CMAKE_CURRENT_LIST_DIR}/nbt-cpp-targets.cmake")
 check_required_components(nbt-cpp)

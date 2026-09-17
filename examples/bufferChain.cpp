@@ -1,12 +1,17 @@
-#include <iostream>
-#include <sstream>
+#include <span>
 
 #include "nbt/nbt.h"
 
 int main() {
-  const auto root = nbt::compoundTag("root", {nbt::intTag("answer", 42)});
-  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
-  nbt::serialize(stream, root);
-  stream.seekg(0);
-  std::cout << nbt::toSnbt(nbt::parse(stream), true) << '\n';
+  using Nbt = nbt::Nbt;
+  const auto bytes = Nbt(Nbt::compound("root", {Nbt::int32("answer", 42)})).encode();
+  Nbt document;
+  const auto split = bytes.size() / 2;
+  if (document.feed(std::span(bytes).first(split)) != Nbt::Status::NeedMoreData) {
+    return 1;
+  }
+  if (document.feed(std::span(bytes).subspan(split)) != Nbt::Status::Complete) {
+    return 1;
+  }
+  return document.root().find("answer").asInt32() == 42 ? 0 : 1;
 }

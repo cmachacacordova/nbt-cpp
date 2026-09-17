@@ -1,104 +1,79 @@
 cmake_minimum_required(VERSION 3.20)
-project(nbt-cpp VERSION 0.1.0 LANGUAGES CXX)
+project(nbt-cpp VERSION 0.2.0 LANGUAGES CXX)
 
 option(NBT_CPP_BUILD_TESTS "Build nbt-cpp tests" ON)
 option(NBT_CPP_BUILD_EXAMPLES "Build nbt-cpp examples" ON)
-option(NBT_CPP_ENABLE_IPO "Enable interprocedural optimization in Release builds" ON)
-option(NBT_CPP_NATIVE_ARCH "Optimize for the build machine CPU" OFF)
+option(NBT_CPP_BUILD_UTILITIES "Expose SNBT, filesystem and compression utilities" ON)
 
-find_package(ZLIB REQUIRED)
-find_path(ZSTR_INCLUDE_DIRS "zstr.hpp" REQUIRED)
-
-add_library(nbt-cpp src/nbt.cpp)
+add_library(nbt-cpp INTERFACE)
 add_library(nbt::nbt ALIAS nbt-cpp)
-set_target_properties(nbt-cpp PROPERTIES
-    EXPORT_NAME nbt
-    POSITION_INDEPENDENT_CODE ON)
-if(BUILD_SHARED_LIBS)
-    target_compile_definitions(nbt-cpp PRIVATE NBT_CPP_EXPORTS PUBLIC NBT_CPP_SHARED)
-endif()
-target_compile_features(nbt-cpp PUBLIC cxx_std_20)
-target_include_directories(nbt-cpp
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-    PRIVATE
-        ${ZSTR_INCLUDE_DIRS})
-target_link_libraries(nbt-cpp PRIVATE ZLIB::ZLIB)
+set_target_properties(nbt-cpp PROPERTIES EXPORT_NAME nbt)
+target_compile_features(nbt-cpp INTERFACE cxx_std_23)
+target_include_directories(nbt-cpp INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
 
-if(MSVC)
-    target_compile_options(nbt-cpp PRIVATE /W4 /permissive-)
-    if(NBT_CPP_NATIVE_ARCH)
-        target_compile_options(nbt-cpp PRIVATE /arch:AVX2)
-    endif()
-else()
-    target_compile_options(nbt-cpp PRIVATE -Wall -Wextra -Wpedantic)
-    if(NBT_CPP_NATIVE_ARCH)
-        target_compile_options(nbt-cpp PRIVATE -march=native -mtune=native)
-    endif()
-endif()
-
-if(NBT_CPP_ENABLE_IPO)
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT NBT_CPP_IPO_SUPPORTED)
-    if(NBT_CPP_IPO_SUPPORTED)
-        set_property(TARGET nbt-cpp PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-    endif()
-endif()
-
-if(NBT_CPP_BUILD_EXAMPLES)
-    add_executable(nbt-read-gzip examples/readGzip.cpp)
-    add_executable(nbt-query-views examples/queryViews.cpp)
-    add_executable(nbt-build examples/buildNbt.cpp)
-    add_executable(nbt-snbt examples/snbt.cpp)
-    add_executable(nbt-stream examples/bufferChain.cpp)
-    add_executable(nbt-network examples/networkNbt.cpp)
-    target_include_directories(nbt-read-gzip PRIVATE ${ZSTR_INCLUDE_DIRS})
-    target_link_libraries(nbt-read-gzip PRIVATE nbt::nbt ZLIB::ZLIB)
-    target_link_libraries(nbt-query-views PRIVATE nbt::nbt)
-    target_link_libraries(nbt-build PRIVATE nbt::nbt)
-    target_link_libraries(nbt-snbt PRIVATE nbt::nbt)
-    target_link_libraries(nbt-stream PRIVATE nbt::nbt)
-    target_link_libraries(nbt-network PRIVATE nbt::nbt)
-    target_compile_definitions(nbt-read-gzip PRIVATE
-        NBT_CPP_EXAMPLE_LEVEL_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/level.dat")
-    if(NBT_CPP_ENABLE_IPO AND NBT_CPP_IPO_SUPPORTED)
-        foreach(exampleTarget IN ITEMS nbt-read-gzip nbt-query-views nbt-build nbt-snbt nbt-stream nbt-network)
-            set_property(TARGET ${exampleTarget} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-        endforeach()
-    endif()
+if(NBT_CPP_BUILD_UTILITIES)
+    find_package(ZLIB REQUIRED)
+    add_library(nbt-cpp-utilities INTERFACE)
+    add_library(nbt::utilities ALIAS nbt-cpp-utilities)
+    set_target_properties(nbt-cpp-utilities PROPERTIES EXPORT_NAME utilities)
+    target_link_libraries(nbt-cpp-utilities INTERFACE nbt-cpp ZLIB::ZLIB)
 endif()
 
 if(NBT_CPP_BUILD_TESTS)
     enable_testing()
     add_executable(nbt-cpp-tests tests/nbt_tests.cpp)
-    target_include_directories(nbt-cpp-tests PRIVATE ${ZSTR_INCLUDE_DIRS})
-    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt ZLIB::ZLIB)
-    target_compile_definitions(nbt-cpp-tests PRIVATE
-        NBT_CPP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")
-    if(NBT_CPP_ENABLE_IPO AND NBT_CPP_IPO_SUPPORTED)
-        set_property(TARGET nbt-cpp-tests PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt)
+    if(NBT_CPP_BUILD_UTILITIES)
+        target_link_libraries(nbt-cpp-tests PRIVATE nbt::utilities)
+        target_compile_definitions(nbt-cpp-tests PRIVATE NBT_CPP_TEST_UTILITIES)
+    endif()
+    if(MSVC)
+        target_compile_options(nbt-cpp-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(nbt-cpp-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME nbt-cpp-tests COMMAND nbt-cpp-tests)
 endif()
 
+if(NBT_CPP_BUILD_EXAMPLES)
+    foreach(example IN ITEMS lazyNbt bufferChain buildNbt networkNbt queryViews)
+        add_executable(nbt-example-${example} examples/${example}.cpp)
+        target_link_libraries(nbt-example-${example} PRIVATE nbt::nbt)
+        if(NBT_CPP_BUILD_TESTS)
+            add_test(NAME nbt-example-${example} COMMAND nbt-example-${example})
+        endif()
+    endforeach()
+    if(NBT_CPP_BUILD_UTILITIES)
+        foreach(example IN ITEMS readGzip snbt)
+            add_executable(nbt-example-${example} examples/${example}.cpp)
+            target_link_libraries(nbt-example-${example} PRIVATE nbt::utilities)
+            if(NBT_CPP_BUILD_TESTS)
+                add_test(NAME nbt-example-${example} COMMAND nbt-example-${example})
+            endif()
+        endforeach()
+    endif()
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
-
 set(nbtCppCmakeDir "${CMAKE_INSTALL_LIBDIR}/cmake/nbt-cpp")
-configure_package_config_file(
-    cmake/nbt-cpp-config.cmake.in
+set(NBT_CPP_CONFIG_FIND_ZLIB "")
+if(NBT_CPP_BUILD_UTILITIES)
+    set(NBT_CPP_CONFIG_FIND_ZLIB "include(CMakeFindDependencyMacro)\nfind_dependency(ZLIB)")
+endif()
+configure_package_config_file(cmake/nbt-cpp-config.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config.cmake"
     INSTALL_DESTINATION "${nbtCppCmakeDir}")
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/nbt-cpp-config-version.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion)
-
-install(TARGETS nbt-cpp EXPORT nbt-cpp-targets
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS nbt-cpp EXPORT nbt-cpp-targets)
+if(NBT_CPP_BUILD_UTILITIES)
+    install(TARGETS nbt-cpp-utilities EXPORT nbt-cpp-targets)
+endif()
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/nbt-cpp)
 install(FILES

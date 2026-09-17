@@ -1,145 +1,134 @@
+#include <array>
 #include <cassert>
-#include <cstdint>
+#include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <vector>
+#include <memory>
+#include <span>
+#include <stdexcept>
+#include <string>
 
 #include "nbt/nbt.h"
-
-#include "zstr.hpp"
+#ifdef NBT_CPP_TEST_UTILITIES
+#include "nbt/utilities.h"
+#endif
 
 namespace {
 
-nbt::Tag makeSampleRoot() {
-  using namespace nbt;
-  return compoundTag("root",
-                     {byteTag("byte", -7),
-                      shortTag("short", -300),
-                      intTag("int", 123456),
-                      longTag("long", INT64_C(0x1020304050607080)),
-                      floatTag("float", 1.25f),
-                      doubleTag("double", -4.5),
-                      stringTag("text", "hello"),
-                      byteArrayTag("bytes", {-1, 0, 1}),
-                      intArrayTag("ints", {-1, 2}),
-                      longArrayTag("longs", {-3, 4}),
-                      listTag("list", Type::Int, {intTag("", 1), intTag("", 2)}),
-                      compoundTag("nested", {stringTag("value", "ok")})});
+void check(bool condition) {
+  if (!condition) {
+    throw std::runtime_error("test assertion failed");
+  }
 }
 
-std::string serialize(const nbt::Tag &root, nbt::BinaryFormat format = nbt::BinaryFormat::File) {
-  std::ostringstream output(std::ios::binary);
-  nbt::serialize(output, root, format);
-  return output.str();
+nbt::Nbt::Value sample() {
+  using N = nbt::Nbt;
+  return N::compound("root", {N::int32("answer", 42), N::string("name", "Alex"), N::list("values", N::Type::Int, {N::int32("", 1), N::int32("", 2)}), N::compound("nested", {N::float64("value", 1.5)})});
 }
 
-nbt::Tag parse(const std::string &data, const nbt::ParseOptions &options = {}) {
-  std::istringstream input(data, std::ios::binary);
-  return nbt::parse(input, options);
+void testBorrowedLazyRead() {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  N document;
+  check(document.borrow(bytes) == N::Status::Complete);
+  check(!document.ownsBytes());
+  check(document.root().name() == "root");
+  check(document.root().beginOffset() == 0);
+  check(document.root().endOffset() == bytes.size());
+  check(document.root().find("answer").asInt32() == 42);
+  check(document.root().find("name").asString() == "Alex");
+  check(document.root().find("values").child(1).asInt32() == 2);
+  check(document.encode() == bytes);
 }
 
-void testBinaryStreams() {
-  using namespace nbt;
-  const auto root = makeSampleRoot();
-  const auto bytes = serialize(root);
-  assert(equivalent(root, parse(bytes)));
-
-  std::istringstream tokenInput(bytes, std::ios::binary);
-  const auto document = tokenize(tokenInput);
-  assert(!document.tokens.empty());
-  assert(document.tokens.front().type == Type::Compound);
-  assert(encodedSize(root) == bytes.size());
-  assert(encodedSize(document) == bytes.size());
-  static_assert(sizeof(Token) <= 24);
+void testOwnedRead() {
+  using N = nbt::Nbt;
+  const auto source = N(sample()).encode();
+  auto owned = std::make_unique<std::byte[]>(source.size());
+  std::copy(source.begin(), source.end(), owned.get());
+  N document;
+  check(document.take(std::move(owned), source.size()) == N::Status::Complete);
+  check(document.ownsBytes());
+  check(document.materialize().type == N::Type::Compound);
 }
 
-void testNetworkStreams() {
-  using namespace nbt;
-  auto root = makeSampleRoot();
-  const auto bytes = serialize(root, BinaryFormat::Network);
-  ParseOptions options;
-  options.format = BinaryFormat::Network;
+void testContinuation() {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  N borrowed;
+  check(borrowed.borrow(std::span(bytes).first(bytes.size() / 2)) == N::Status::NeedMoreData);
+  check(borrowed.replaceBorrowed(bytes) == N::Status::Complete);
+
+  N fed;
+  check(fed.feed(std::span(bytes).first(bytes.size() / 2)) == N::Status::NeedMoreData);
+  check(fed.feed(std::span(bytes).subspan(bytes.size() / 2)) == N::Status::Complete);
+  check(fed.ownsBytes());
+}
+
+void testNetworkFormat() {
+  using N = nbt::Nbt;
+  auto root = sample();
   root.name.clear();
-  assert(encodedSize(root, BinaryFormat::Network) == bytes.size());
-  assert(equivalent(root, parse(bytes, options)));
-  assert(static_cast<unsigned char>(bytes.front()) == 0x0a);
+  const auto bytes = N(root).encode(N::Format::Network);
+  N::Options options;
+  options.format = N::Format::Network;
+  N document;
+  check(document.borrow(bytes, options) == N::Status::Complete);
+  check(document.root().type() == N::Type::Compound);
 }
 
-void testIncrementalParsing() {
-  using namespace nbt;
-  const auto bytes = serialize(makeSampleRoot());
-  std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
-  stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size() / 2));
-  stream.seekg(0);
-  assert(!tryParse(stream));
-  assert(stream.tellg() == std::streampos{0});
-  stream.clear();
-  stream.seekp(0, std::ios::end);
-  stream.write(bytes.data() + bytes.size() / 2, static_cast<std::streamsize>(bytes.size() - bytes.size() / 2));
-  stream.seekg(0);
-  const auto result = tryParse(stream);
-  assert(result && equivalent(*result, makeSampleRoot()));
-}
-
-void testSnbtAndUtilities() {
-  using namespace nbt;
-  const auto root = makeSampleRoot();
-  assert(equivalent(root, parseSnbt(toSnbt(root, false))));
-  assert(size(root) == 16);
-  assert(findByPath(root, "root.nested.value")->as<std::string>() == "ok");
-
-  Builder builder("built");
-  builder.add(intTag("answer", 42)).beginList("items", Type::String).add(stringTag("", "a")).end();
-  assert(equivalent(builder.build(), parse(serialize(builder.build()))));
-}
-
-void testFiles() {
-  using namespace nbt;
-  const auto temporary = std::filesystem::temp_directory_path() / "nbt-cpp-test.dat";
-  {
-    zstr::ofstream output(temporary.string(), std::ios::binary);
-    serialize(output, makeSampleRoot());
+void testEveryTruncation() {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  for (std::size_t size = 0; size < bytes.size(); ++size) {
+    N document;
+    check(document.borrow(std::span(bytes).first(size)) == N::Status::NeedMoreData);
   }
-  {
-    zstr::ifstream input(temporary.string(), std::ios::binary);
-    assert(equivalent(nbt::parse(input), makeSampleRoot()));
-  }
-  save(temporary, makeSampleRoot());
-  assert(equivalent(load(temporary, Compression::None), makeSampleRoot()));
-  save(temporary, makeSampleRoot(), Compression::Gzip);
-  assert(equivalent(load(temporary), makeSampleRoot()));
-  save(temporary, makeSampleRoot(), Compression::Zlib);
-  assert(equivalent(load(temporary), makeSampleRoot()));
-  std::filesystem::remove(temporary);
-
-  const auto levelPath = std::filesystem::path(NBT_CPP_TEST_DATA_DIR) / "level.dat";
-  zstr::ifstream input(levelPath.string(), std::ios::binary);
-  assert(nbt::parse(input).type == Type::Compound);
 }
 
-void testErrors() {
-  using namespace nbt;
-  auto bytes = serialize(makeSampleRoot());
-  bytes.pop_back();
-  bool incomplete = false;
+#ifdef NBT_CPP_TEST_UTILITIES
+void testUtilities() {
+  using N = nbt::Nbt;
+  using U = nbt::NbtUtilities;
+  const auto snbt = U::toSnbt(sample());
+  auto decoded = U::parseSnbt(snbt);
+  decoded.name = "root";
+  check(N(decoded).encode() == N(sample()).encode());
+
+  const auto path = std::filesystem::temp_directory_path() / "nbt-cpp-lazy-test.dat";
+  N document(sample());
+  for (const auto compression : {U::Compression::None, U::Compression::Gzip, U::Compression::Zlib}) {
+    U::save(path, document, compression);
+    auto loaded = U::load(path);
+    check(loaded.root().find("answer").asInt32() == 42);
+  }
+  std::filesystem::remove(path);
+}
+#endif
+
+void testMalformedInput() {
+  using N = nbt::Nbt;
+  using E = nbt::Error;
+  const std::array invalid{std::byte{0x7f}};
+  bool rejected = false;
   try {
-    (void)parse(bytes);
-  } catch (const IncompleteDataError &) {
-    incomplete = true;
+    N document;
+    (void)document.borrow(invalid);
+  } catch (const E &) {
+    rejected = true;
   }
-  assert(incomplete);
+  check(rejected);
 }
 
 } // namespace
 
 int main() {
-  testBinaryStreams();
-  testNetworkStreams();
-  testIncrementalParsing();
-  testSnbtAndUtilities();
-  testFiles();
-  testErrors();
-  std::cout << "nbt-cpp tests passed\n";
+  testBorrowedLazyRead();
+  testOwnedRead();
+  testContinuation();
+  testNetworkFormat();
+  testEveryTruncation();
+#ifdef NBT_CPP_TEST_UTILITIES
+  testUtilities();
+#endif
+  testMalformedInput();
 }
