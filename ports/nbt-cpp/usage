@@ -5,4 +5,4 @@ nbt-cpp provides CMake targets:
 
 Include the public API with:
 
-  #include <nbt/nbt.hpp>
+  #include <nbt/nbt.h>
