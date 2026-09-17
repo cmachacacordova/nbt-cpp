@@ -10,5 +10,5 @@ int main() {
   if (decoded.borrow(bytes, options) != Nbt::Status::Complete) {
     return 1;
   }
-  return decoded.root().find("answer").asInt32() == 42 ? 0 : 1;
+  return decoded.root().find("answer").as<Nbt::Type::Int>() == 42 ? 0 : 1;
 }

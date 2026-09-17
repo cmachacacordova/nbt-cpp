@@ -13,5 +13,5 @@ int main() {
   if (document.feed(std::span(bytes).subspan(split)) != Nbt::Status::Complete) {
     return 1;
   }
-  return document.root().find("answer").asInt32() == 42 ? 0 : 1;
+  return document.root().find("answer").as<Nbt::Type::Int>() == 42 ? 0 : 1;
 }

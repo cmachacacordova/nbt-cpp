@@ -34,9 +34,9 @@ void testBorrowedLazyRead() {
   check(document.root().name() == "root");
   check(document.root().beginOffset() == 0);
   check(document.root().endOffset() == bytes.size());
-  check(document.root().find("answer").asInt32() == 42);
-  check(document.root().find("name").asString() == "Alex");
-  check(document.root().find("values").child(1).asInt32() == 2);
+  check(document.root().find("answer").as<N::Type::Int>() == 42);
+  check(document.root().find("name").as<N::Type::String>() == "Alex");
+  check(document.root().find("values").child(1).as<N::Type::Int>() == 2);
   check(document.encode() == bytes);
 }
 
@@ -99,7 +99,7 @@ void testUtilities() {
   for (const auto compression : {U::Compression::None, U::Compression::Gzip, U::Compression::Zlib}) {
     U::save(path, document, compression);
     auto loaded = U::load(path);
-    check(loaded.root().find("answer").asInt32() == 42);
+    check(loaded.root().find("answer").as<N::Type::Int>() == 42);
   }
   std::filesystem::remove(path);
 }
@@ -122,13 +122,18 @@ void testMalformedInput() {
 } // namespace
 
 int main() {
-  testBorrowedLazyRead();
-  testOwnedRead();
-  testContinuation();
-  testNetworkFormat();
-  testEveryTruncation();
+  try {
+    testBorrowedLazyRead();
+    testOwnedRead();
+    testContinuation();
+    testNetworkFormat();
+    testEveryTruncation();
 #ifdef NBT_CPP_TEST_UTILITIES
-  testUtilities();
+    testUtilities();
 #endif
-  testMalformedInput();
+    testMalformedInput();
+  } catch (...) {
+    return 1;
+  }
+  return 0;
 }

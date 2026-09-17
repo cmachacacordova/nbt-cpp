@@ -131,7 +131,7 @@ public:
       for (std::size_t index = 0; index < position; ++index) {
         current = owner_->nodes_[current].subtreeEnd;
       }
-      return View(owner_, current);
+      return {owner_, current};
     }
 
     [[nodiscard]] View find(std::string_view requestedName) const {
@@ -144,55 +144,70 @@ public:
       return {};
     }
 
-    [[nodiscard]] std::int8_t asInt8() const {
+    template <Type>
+    [[nodiscard]] auto as() const {
+      throw std::logic_error("invalid NBT type");
+    }
+
+    template <>
+    [[nodiscard]] auto as<Type::Byte>() const {
       require(Type::Byte);
       return owner_->readNumber<std::int8_t>(node().payload);
     }
 
-    [[nodiscard]] std::int16_t asInt16() const {
+    template <>
+    [[nodiscard]] auto as<Type::Short>() const {
       require(Type::Short);
       return owner_->readNumber<std::int16_t>(node().payload);
     }
 
-    [[nodiscard]] std::int32_t asInt32() const {
+    template <>
+    [[nodiscard]] auto as<Type::Int>() const {
       require(Type::Int);
       return owner_->readNumber<std::int32_t>(node().payload);
     }
 
-    [[nodiscard]] std::int64_t asInt64() const {
+    template <>
+    [[nodiscard]] auto as<Type::Long>() const {
       require(Type::Long);
       return owner_->readNumber<std::int64_t>(node().payload);
     }
 
-    [[nodiscard]] float asFloat32() const {
+    template <>
+    [[nodiscard]] auto as<Type::Float>() const {
       require(Type::Float);
       return owner_->readNumber<float>(node().payload);
     }
 
-    [[nodiscard]] double asFloat64() const {
+    template <>
+    [[nodiscard]] auto as<Type::Double>() const {
       require(Type::Double);
       return owner_->readNumber<double>(node().payload);
     }
 
-    [[nodiscard]] std::string_view asString() const {
+    template <>
+    [[nodiscard]] auto as<Type::String>() const {
       require(Type::String);
       const auto offset = node().payload;
       const auto size = owner_->readNumber<std::uint16_t>(offset);
       return owner_->text(offset + 2, size);
     }
 
-    [[nodiscard]] std::span<const std::byte> asByteArray() const {
+    template <>
+    [[nodiscard]] auto as<Type::ByteArray>() const {
       require(Type::ByteArray);
       const auto count = owner_->readNumber<std::int32_t>(node().payload);
-      return {owner_->data_ + node().payload + 4, static_cast<std::size_t>(count)};
+      return std::span<const std::byte>{owner_->data_ + node().payload + 4, static_cast<std::size_t>(count)};
     }
 
-    [[nodiscard]] std::vector<std::int32_t> asIntArray() const {
+    template <>
+    [[nodiscard]] auto as<Type::IntArray>() const {
       require(Type::IntArray);
       return std::get<std::vector<std::int32_t>>(materialize().payload);
     }
 
-    [[nodiscard]] std::vector<std::int64_t> asLongArray() const {
+    template <>
+    [[nodiscard]] auto as<Type::LongArray>() const {
       require(Type::LongArray);
       return std::get<std::vector<std::int64_t>>(materialize().payload);
     }
@@ -221,7 +236,7 @@ public:
     }
 
     const Nbt *owner_{};
-    std::uint32_t index_{};
+    const std::uint32_t index_{};
   };
 
   Nbt() = default;
@@ -659,10 +674,10 @@ private:
       value.payload = readNumber<double>(node.payload);
       break;
     case Type::String:
-      value.payload = std::string(View(this, nodeIndex).asString());
+      value.payload = std::string(View(this, nodeIndex).as<Type::String>());
       break;
     case Type::ByteArray: {
-      const auto bytes = View(this, nodeIndex).asByteArray();
+      const auto bytes = View(this, nodeIndex).as<Type::ByteArray>();
       std::vector<std::int8_t> result(bytes.size());
       std::memcpy(result.data(), bytes.data(), bytes.size());
       value.payload = std::move(result);
@@ -691,7 +706,7 @@ private:
       break;
     }
     case Type::List: {
-      List list{node.elementType, {}};
+      List list{.elementType = node.elementType, .values = {}};
       list.values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
         list.values.push_back(View(this, nodeIndex).child(index).materialize());
@@ -847,4 +862,5 @@ private:
   bool accumulating_{};
 };
 
+using NbtView = Nbt::View;
 } // namespace nbt

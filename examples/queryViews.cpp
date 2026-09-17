@@ -8,7 +8,7 @@ int main() {
     return 1;
   }
   const auto health = document.root().find("health");
-  if (!health || health.asInt32() != 20) {
+  if (!health || health.as<Nbt::Type::Int>() != 20) {
     return 1;
   }
   return health.beginOffset() < health.endOffset() ? 0 : 1;

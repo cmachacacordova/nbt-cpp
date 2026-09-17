@@ -14,5 +14,5 @@ int main() {
   if (document.replaceBorrowed(encoded) != Nbt::Status::Complete) {
     return 1;
   }
-  return document.root().find("health").asInt32() == 20 ? 0 : 1;
+  return document.root().find("health").as<Nbt::Type::Int>() == 20 ? 0 : 1;
 }
