@@ -268,72 +268,35 @@ public:
       return {};
     }
 
-    template <Type>
+    template <Type t>
     [[nodiscard]] auto as() const {
-      static_assert(false, "Invalid NBT type");
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Byte>() const {
-      require(Type::Byte);
-      return owner_->readNumber<std::int8_t>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Short>() const {
-      require(Type::Short);
-      return owner_->readNumber<std::int16_t>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Int>() const {
-      require(Type::Int);
-      return owner_->readNumber<std::int32_t>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Long>() const {
-      require(Type::Long);
-      return owner_->readNumber<std::int64_t>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Float>() const {
-      require(Type::Float);
-      return owner_->readNumber<float>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::Double>() const {
-      require(Type::Double);
-      return owner_->readNumber<double>(node().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::String>() const {
-      require(Type::String);
-      const auto offset = node().payload;
-      const auto size = owner_->readNumber<std::uint16_t>(offset);
-      return owner_->text(offset + 2, size);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::ByteArray>() const {
-      require(Type::ByteArray);
-      const auto count = owner_->readNumber<std::int32_t>(node().payload);
-      return std::span<const std::byte>{owner_->data_.get() + node().payload + 4, static_cast<std::size_t>(count)};
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::IntArray>() const {
-      require(Type::IntArray);
-      return std::get<std::vector<std::int32_t>>(materialize().payload);
-    }
-
-    template <>
-    [[nodiscard]] auto as<Type::LongArray>() const {
-      require(Type::LongArray);
-      return std::get<std::vector<std::int64_t>>(materialize().payload);
+      require(t);
+      if constexpr (t == Type::Byte) {
+        return owner_->readNumber<std::int8_t>(node().payload);
+      } else if constexpr (t == Type::Short) {
+        return owner_->readNumber<std::int16_t>(node().payload);
+      } else if constexpr (t == Type::Int) {
+        return owner_->readNumber<std::int32_t>(node().payload);
+      } else if constexpr (t == Type::Long) {
+        return owner_->readNumber<std::int64_t>(node().payload);
+      } else if constexpr (t == Type::Float) {
+        return owner_->readNumber<float>(node().payload);
+      } else if constexpr (t == Type::Double) {
+        return owner_->readNumber<double>(node().payload);
+      } else if constexpr (t == Type::String) {
+        const auto offset = node().payload;
+        const auto size = owner_->readNumber<std::uint16_t>(offset);
+        return owner_->text(offset + 2, size);
+      } else if constexpr (t == Type::ByteArray) {
+        const auto count = owner_->readNumber<std::int32_t>(node().payload);
+        return std::span<const std::byte>{owner_->data_.get() + node().payload + 4, static_cast<std::size_t>(count)};
+      } else if constexpr (t == Type::IntArray) {
+        return std::get<std::vector<std::int32_t>>(materialize().payload);
+      } else if constexpr (t == Type::LongArray) {
+        return std::get<std::vector<std::int64_t>>(materialize().payload);
+      } else {
+        static_assert(false, "Invalid NBT type");
+      }
     }
 
     [[nodiscard]] Value materialize() const {
