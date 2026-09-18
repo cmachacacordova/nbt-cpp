@@ -138,15 +138,11 @@ public:
       return document;
     }
 
-    std::unique_ptr<std::byte[], BufferFree> bytes(const_cast<std::byte *>(data.data()), freeBufferView);
-    size_t size = data.size();
+    Buffer bytes(data);
 
     document.data_.swap(bytes);
-    document.size_ = size;
-    document.capacity_ = 0;
     document.encodedSize_ = 0;
     document.options_ = options;
-    document.bufferType_ = nbt::Nbt::BufferType::View;
     document.validate();
 
     return document;
@@ -161,31 +157,30 @@ public:
   template <typename Container>
   [[nodiscard]] static Nbt parse(const Container &data, const Options &options) {
     std::span<const std::byte> view = std::as_bytes(std::span(data));
-    size_t size = data.size();
 
-    if (size == 0) {
+    if (view.empty()) {
       Nbt document;
       document.status_ = nbt::Nbt::Status::NeedMoreData;
       return document;
     }
 
-    std::unique_ptr<std::byte[], BufferFree> bytes(new (std::nothrow) std::byte[size], freeBufferOwner);
+    Buffer bytes(view.size());
 
-    if (bytes == nullptr) {
+    if (bytes.data == nullptr) {
       nbt::Nbt document;
       document.status_ = nbt::Nbt::Status::Error;
       return document;
     }
 
-    std::memcpy(bytes.get(), view.data(), size);
+    std::memcpy(bytes.data, view.data(), view.size());
+
+    bytes.size += view.size();
+    bytes.capacity -= view.size();
 
     nbt::Nbt document;
     document.data_.swap(bytes);
-    document.size_ = size;
-    document.capacity_ = 0;
     document.encodedSize_ = 0;
     document.options_ = options;
-    document.bufferType_ = nbt::Nbt::BufferType::Ptr;
     document.validate();
 
     return document;
@@ -205,15 +200,58 @@ private:
     Type elementType{Type::End};
   };
 
-  static void freeBufferOwner(std::byte *data) {
-    if (data != nullptr) [[likely]] {
-      delete[] data;
-    }
-  }
+  struct Buffer {
+    inline static std::allocator<std::byte> byteAlloc{};
 
-  static void freeBufferView(std::byte * /* data */) {
-    // Empty
-  }
+    std::byte *data;
+    std::size_t size;
+    std::size_t capacity;
+
+    nbt::Nbt::BufferType type;
+
+    Buffer() : data{nullptr}, size{0}, capacity{0}, type{nbt::Nbt::BufferType::View} {
+    }
+
+    Buffer(std::span<const std::byte> view) : Buffer() {
+      this->data = const_cast<std::byte *>(view.data());
+      this->size = view.size_bytes();
+      this->type = nbt::Nbt::BufferType::View;
+    }
+
+    Buffer(std::size_t capacity) : Buffer() {
+      try {
+        this->data = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, capacity);
+        this->size = 0;
+        this->capacity = capacity;
+        this->type = nbt::Nbt::BufferType::Ptr;
+      } catch (const std::bad_alloc &e) {
+        this->data = nullptr;
+        this->size = this->capacity = 0;
+        this->type = nbt::Nbt::BufferType::View;
+      }
+    }
+
+    void swap(Buffer &other) noexcept {
+      using std::swap;
+      swap(data, other.data);
+      swap(size, other.size);
+      swap(capacity, other.capacity);
+      swap(type, other.type);
+    }
+
+    void reset() {
+      this->data = nullptr;
+      this->size = 0;
+      this->capacity = 0;
+      this->type = nbt::Nbt::BufferType::View;
+    }
+
+    ~Buffer() {
+      if (type != nbt::Nbt::BufferType::View) {
+        std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data, capacity);
+      }
+    }
+  };
 
 public:
   class View {
@@ -289,7 +327,7 @@ public:
         return owner_->text(offset + 2, size);
       } else if constexpr (t == Type::ByteArray) {
         const auto count = owner_->readNumber<std::int32_t>(node().payload);
-        return std::span<const std::byte>{owner_->data_.get() + node().payload + 4, static_cast<std::size_t>(count)};
+        return std::span<const std::byte>{owner_->data_.data + node().payload + 4, static_cast<std::size_t>(count)};
       } else if constexpr (t == Type::IntArray) {
         return std::get<std::vector<std::int32_t>>(materialize().payload);
       } else if constexpr (t == Type::LongArray) {
@@ -381,25 +419,28 @@ public:
       options_ = options;
       status_ = nbt::Nbt::Status::NeedMoreData;
     }
-    const auto requiredCapacity = size_ + chunk.size();
-    if (bufferType_ == Nbt::BufferType::View || requiredCapacity > capacity_) [[likely]] {
-      const auto grownCapacity = std::max(requiredCapacity, std::max<std::size_t>(64, capacity_ * 2));
 
-      std::unique_ptr<std::byte[], BufferFree> replacement(new (std::nothrow) std::byte[grownCapacity], freeBufferOwner);
-      if (size_ > 0) {
-        std::memcpy(replacement.get(), data_.get(), size_);
+    const auto requiredCapacity = data_.size + chunk.size();
+    if (data_.type == Nbt::BufferType::View || requiredCapacity > data_.capacity) [[likely]] {
+      const auto grownCapacity = std::max(requiredCapacity, std::max<std::size_t>(64, data_.capacity * 2));
+
+      Buffer replacement(grownCapacity);
+
+      if (data_.size > 0) {
+        std::memcpy(replacement.data, data_.data, data_.size);
       }
+      replacement.size = data_.size;
 
       data_.swap(replacement);
-      capacity_ = grownCapacity;
-      bufferType_ = Nbt::BufferType::Ptr;
+      data_.capacity = grownCapacity;
+      data_.type = Nbt::BufferType::Ptr;
     }
 
     if (!chunk.empty()) [[likely]] {
-      std::memcpy(data_.get() + size_, chunk.data(), chunk.size());
+      std::memcpy(data_.data + data_.size, chunk.data(), chunk.size());
     }
 
-    size_ = requiredCapacity;
+    data_.size = requiredCapacity;
 
     validate();
   }
@@ -408,11 +449,11 @@ public:
     data_.reset();
     rootValue_.reset();
     status_ = nbt::Nbt::Status::Empty;
-    size_ = 0;
-    capacity_ = 0;
+    data_.size = 0;
+    data_.capacity = 0;
     encodedSize_ = 0;
     position_ = 0;
-    bufferType_ = Nbt::BufferType::View;
+    data_.type = Nbt::BufferType::View;
     nodes_.clear();
   }
 
@@ -425,11 +466,11 @@ public:
   }
 
   [[nodiscard]] bool ownsBytes() const noexcept {
-    return bufferType_ == Nbt::BufferType::Ptr;
+    return data_.type == Nbt::BufferType::Ptr;
   }
 
   [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
-    return {data_.get(), size_};
+    return {data_.data, data_.size};
   }
 
   [[nodiscard]] View root() const {
@@ -451,7 +492,7 @@ public:
 
   [[nodiscard]] std::vector<std::byte> encode(Format format = Format::File) const {
     if (complete() && format == options_.format) {
-      return {data_.get(), data_.get() + encodedSize_};
+      return {data_.data, data_.data + encodedSize_};
     }
 
     Value value = materialize();
@@ -535,7 +576,7 @@ private:
     nodes_.clear();
     position_ = 0;
     try {
-      if (size_ > options_.maxInputBytes) {
+      if (data_.size > options_.maxInputBytes) {
         throw Error("NBT input byte limit exceeded", 0);
       }
       if (options_.format == Format::File) {
@@ -550,7 +591,7 @@ private:
         parsePayload(rootIndex, type, 0);
       }
       encodedSize_ = position_;
-      if (options_.requireCompleteInput && position_ != size_) {
+      if (options_.requireCompleteInput && position_ != data_.size) {
         throw Error("trailing NBT data", position_);
       }
       status_ = nbt::Nbt::Status::Complete;
@@ -697,7 +738,7 @@ private:
     using Bits = std::conditional_t<sizeof(T) == 1, std::uint8_t, std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>>;
     Bits bits{};
     for (std::size_t index = 0; index < sizeof(T); ++index) {
-      bits = static_cast<Bits>((bits << 8) | std::to_integer<std::uint8_t>(data_[offset + index]));
+      bits = static_cast<Bits>((bits << 8) | std::to_integer<std::uint8_t>(data_.data[offset + index]));
     }
     if constexpr (std::is_floating_point_v<T>) {
       return std::bit_cast<T>(bits);
@@ -716,7 +757,7 @@ private:
 
   [[nodiscard]] std::byte peek() const {
     require(1);
-    return data_[position_];
+    return data_.data[position_];
   }
 
   void skip(std::size_t count) {
@@ -725,7 +766,7 @@ private:
   }
 
   void require(std::size_t count) const {
-    if (count > size_ - std::min(size_, position_)) {
+    if (count > data_.size - std::min(data_.size, position_)) {
       throw NeedMore{};
     }
   }
@@ -738,7 +779,7 @@ private:
   }
 
   [[nodiscard]] std::string_view text(std::size_t offset, std::size_t size) const {
-    return {reinterpret_cast<const char *>(data_.get() + offset), size};
+    return {reinterpret_cast<const char *>(data_.data + offset), size};
   }
 
   [[nodiscard]] Value materialize(std::uint32_t nodeIndex) const {
@@ -940,17 +981,13 @@ private:
     return temporary.size();
   }
 
-  using BufferFree = void (*)(std::byte *);
-
   static constexpr std::uint32_t noNode = (std::numeric_limits<std::uint32_t>::max)();
 
-  std::unique_ptr<std::byte[], BufferFree> data_{nullptr, freeBufferView};
+  Buffer data_;
+
   std::optional<Value> rootValue_;
   nbt::Nbt::Options options_;
   nbt::Nbt::Status status_{nbt::Nbt::Status::Empty};
-  nbt::Nbt::BufferType bufferType_{nbt::Nbt::BufferType::View};
-  std::size_t size_{0};
-  std::size_t capacity_{0};
   std::size_t encodedSize_{0};
   mutable std::size_t position_{0};
   std::vector<nbt::Nbt::Node> nodes_;
