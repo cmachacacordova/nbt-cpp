@@ -2,7 +2,6 @@
 #include <cassert>
 #include <cstddef>
 #include <filesystem>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -27,13 +26,14 @@ nbt::Nbt::Value sample() {
 
 void testBorrowedLazyRead() {
   using N = nbt::Nbt;
-  const auto bytes = N(sample()).encode();
-  N document;
-  check(document.borrow(bytes) == N::Status::Complete);
+  const std::vector<std::byte> bytes = N(sample()).encode();
+  const std::span<const std::byte> view(bytes);
+  N document = N::parse(view);
+  check(document.complete());
   check(!document.ownsBytes());
   check(document.root().name() == "root");
-  check(document.root().beginOffset() == 0);
-  check(document.root().endOffset() == bytes.size());
+  check(document.root().begin() == 0);
+  check(document.root().end() == bytes.size());
   check(document.root().find("answer").as<N::Type::Int>() == 42);
   check(document.root().find("name").as<N::Type::String>() == "Alex");
   check(document.root().find("values").child(1).as<N::Type::Int>() == 2);
@@ -43,10 +43,8 @@ void testBorrowedLazyRead() {
 void testOwnedRead() {
   using N = nbt::Nbt;
   const auto source = N(sample()).encode();
-  auto owned = std::make_unique<std::byte[]>(source.size());
-  std::copy(source.begin(), source.end(), owned.get());
-  N document;
-  check(document.take(std::move(owned), source.size()) == N::Status::Complete);
+  N document = N::parse(source);
+  check(document.complete());
   check(document.ownsBytes());
   check(document.materialize().type == N::Type::Compound);
 }
@@ -54,14 +52,18 @@ void testOwnedRead() {
 void testContinuation() {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
-  N borrowed;
-  check(borrowed.borrow(std::span(bytes).first(bytes.size() / 2)) == N::Status::NeedMoreData);
-  check(borrowed.replaceBorrowed(bytes) == N::Status::Complete);
+  const std::span<const std::byte> view(bytes);
+  N borrowed = N::parse(view.first(bytes.size() / 2));
+  check(borrowed.status() == N::Status::NeedMoreData);
+  borrowed.reset(view);
+  check(borrowed.status() == N::Status::Complete);
 
-  N fed;
-  check(fed.feed(std::span(bytes).first(bytes.size() / 2)) == N::Status::NeedMoreData);
-  check(fed.feed(std::span(bytes).subspan(bytes.size() / 2)) == N::Status::Complete);
-  check(fed.ownsBytes());
+  N append;
+  append.append(view.first(view.size() / 2));
+  check(append.status() == N::Status::NeedMoreData);
+  append.append(view.subspan(view.size() / 2));
+  check(append.status() == N::Status::Complete);
+  check(append.ownsBytes());
 }
 
 void testNetworkFormat() {
@@ -71,8 +73,8 @@ void testNetworkFormat() {
   const auto bytes = N(root).encode(N::Format::Network);
   N::Options options;
   options.format = N::Format::Network;
-  N document;
-  check(document.borrow(bytes, options) == N::Status::Complete);
+  N document = N::parse(std::as_bytes(std::span(bytes)), options);
+  check(document.status() == N::Status::Complete);
   check(document.root().type() == N::Type::Compound);
 }
 
@@ -80,8 +82,8 @@ void testEveryTruncation() {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   for (std::size_t size = 0; size < bytes.size(); ++size) {
-    N document;
-    check(document.borrow(std::span(bytes).first(size)) == N::Status::NeedMoreData);
+    N document = N::parse(std::as_bytes(std::span(bytes).first(size)));
+    check(document.status() == N::Status::NeedMoreData);
   }
 }
 
@@ -111,8 +113,7 @@ void testMalformedInput() {
   const std::array invalid{std::byte{0x7f}};
   bool rejected = false;
   try {
-    N document;
-    (void)document.borrow(invalid);
+    N document = N::parse(invalid);
   } catch (const E &) {
     rejected = true;
   }

@@ -46,9 +46,9 @@ private:
 class Nbt final {
 public:
   enum class Type : std::uint8_t { End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray };
-
   enum class Format : std::uint8_t { File, Network };
-  enum class Status : std::uint8_t { Complete, NeedMoreData };
+  enum class Status : std::uint8_t { Empty, Complete, NeedMoreData, Error };
+  enum class BufferType : std::uint8_t { Ptr, View };
 
   struct Options {
     std::size_t maxDepth{512};
@@ -59,24 +59,137 @@ public:
     Format format{Format::File};
   };
 
-  struct Value;
-
-  struct List {
-    Type elementType{Type::End};
-    std::vector<Value> values;
-  };
-
-  struct Compound {
-    std::vector<Value> values;
-  };
-
   struct Value {
-    using Payload = std::variant<std::monostate, std::int8_t, std::int16_t, std::int32_t, std::int64_t, float, double, std::string, std::vector<std::int8_t>, std::vector<std::int32_t>, std::vector<std::int64_t>, List, Compound>;
+
+    using Byte = std::int8_t;            ///< Signed 8-bit TAG_Byte payload.
+    using Short = std::int16_t;          ///< Signed 16-bit TAG_Short payload.
+    using Int = std::int32_t;            ///< Signed 32-bit TAG_Int payload.
+    using Long = std::int64_t;           ///< Signed 64-bit TAG_Long payload.
+    using Float = float;                 ///< IEEE-754 TAG_Float payload.
+    using Double = double;               ///< IEEE-754 TAG_Double payload.
+    using String = std::string;          ///< Owning UTF-8 TAG_String payload.
+    using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
+    using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
+    using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
+
+    struct List {
+      Type elementType{Type::End};
+      std::vector<Value> values; ///< List elements in serialized order.
+
+      List() = default;
+
+      /**
+       * @brief Constructs a list by taking ownership of existing elements.
+       *
+       * @param value
+       */
+      explicit List(Type elementType, std::vector<Value> value) : elementType(elementType), values(std::move(value)) {
+      }
+
+      /**
+       * @brief Constructs a list from an initializer list.
+       *
+       * @param init
+       */
+      List(std::initializer_list<Value> init) : values(init) {
+      }
+    };
+
+    /** @brief Ordered collection of named child tags. */
+    struct Compound {
+      std::vector<Value> values; ///< Child values in serialized order.
+
+      Compound() = default;
+
+      /**
+       * @brief Constructs a compound by taking ownership of existing children.
+       *
+       * @param value
+       */
+      explicit Compound(std::vector<Value> value) : values(std::move(value)) {
+      }
+
+      /**
+       * @brief Constructs a compound from an initializer list.
+       *
+       * @param init
+       */
+      Compound(std::initializer_list<Value> init) : values(init) {
+      }
+    };
+
+    using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, List, Compound, ByteArray, IntArray, LongArray>;
 
     Type type{Type::End};
     std::string name;
     Payload payload;
   };
+
+  [[nodiscard]] static Nbt parse(std::span<const std::byte> data) {
+    Options options;
+    return parse(data, options);
+  }
+
+  [[nodiscard]] static Nbt parse(std::span<const std::byte> data, const Options &options) {
+    nbt::Nbt document;
+
+    if (data.size() == 0) {
+      document.status_ = nbt::Nbt::Status::NeedMoreData;
+      return document;
+    }
+
+    std::unique_ptr<std::byte[], BufferFree> bytes(const_cast<std::byte *>(data.data()), freeBufferView);
+    size_t size = data.size();
+
+    document.data_.swap(bytes);
+    document.size_ = size;
+    document.capacity_ = 0;
+    document.encodedSize_ = 0;
+    document.options_ = options;
+    document.bufferType_ = nbt::Nbt::BufferType::View;
+    document.validate();
+
+    return document;
+  }
+
+  template <typename Container>
+  [[nodiscard]] static Nbt parse(const Container &data) {
+    Options options;
+    return parse(data, options);
+  }
+
+  template <typename Container>
+  [[nodiscard]] static Nbt parse(const Container &data, const Options &options) {
+    std::span<const std::byte> view = std::as_bytes(std::span(data));
+    size_t size = data.size();
+
+    if (size == 0) {
+      Nbt document;
+      document.status_ = nbt::Nbt::Status::NeedMoreData;
+      return document;
+    }
+
+    std::unique_ptr<std::byte[], BufferFree> bytes(new (std::nothrow) std::byte[size], freeBufferOwner);
+
+    if (bytes == nullptr) {
+      nbt::Nbt document;
+      document.status_ = nbt::Nbt::Status::Error;
+      return document;
+    }
+
+    std::memcpy(bytes.get(), view.data(), size);
+
+    nbt::Nbt document;
+    document.data_.swap(bytes);
+    document.size_ = size;
+    document.capacity_ = 0;
+    document.encodedSize_ = 0;
+    document.options_ = options;
+    document.bufferType_ = nbt::Nbt::BufferType::Ptr;
+    document.validate();
+
+    return document;
+  }
 
 private:
   struct Node {
@@ -92,6 +205,16 @@ private:
     Type elementType{Type::End};
   };
 
+  static void freeBufferOwner(std::byte *data) {
+    if (data != nullptr) [[likely]] {
+      delete[] data;
+    }
+  }
+
+  static void freeBufferView(std::byte * /* data */) {
+    // Empty
+  }
+
 public:
   class View {
   public:
@@ -105,11 +228,11 @@ public:
       return node().type;
     }
 
-    [[nodiscard]] std::size_t beginOffset() const {
+    [[nodiscard]] std::size_t begin() const {
       return node().begin;
     }
 
-    [[nodiscard]] std::size_t endOffset() const {
+    [[nodiscard]] std::size_t end() const {
       return node().end;
     }
 
@@ -135,7 +258,8 @@ public:
     }
 
     [[nodiscard]] View find(std::string_view requestedName) const {
-      for (std::size_t index = 0; index < childCount(); ++index) {
+      const size_t childCount = this->childCount();
+      for (std::size_t index = 0; index < childCount; ++index) {
         auto candidate = child(index);
         if (candidate.name() == requestedName) {
           return candidate;
@@ -146,7 +270,7 @@ public:
 
     template <Type>
     [[nodiscard]] auto as() const {
-      throw std::logic_error("invalid NBT type");
+      static_assert(false, "Invalid NBT type");
     }
 
     template <>
@@ -197,7 +321,7 @@ public:
     [[nodiscard]] auto as<Type::ByteArray>() const {
       require(Type::ByteArray);
       const auto count = owner_->readNumber<std::int32_t>(node().payload);
-      return std::span<const std::byte>{owner_->data_ + node().payload + 4, static_cast<std::size_t>(count)};
+      return std::span<const std::byte>{owner_->data_.get() + node().payload + 4, static_cast<std::size_t>(count)};
     }
 
     template <>
@@ -241,7 +365,8 @@ public:
 
   Nbt() = default;
 
-  Nbt(Value rootValue) : rootValue_(std::move(rootValue)) {
+  Nbt(Value rootValue) : Nbt() {
+    rootValue_ = std::move(rootValue);
   }
 
   Nbt(const Nbt &) = delete;
@@ -249,103 +374,109 @@ public:
   Nbt(Nbt &&) noexcept = default;
   Nbt &operator=(Nbt &&) noexcept = default;
 
-  [[nodiscard]] Status borrow(std::span<const std::byte> input) {
+  void reset(std::span<const std::byte> data) {
     Options options;
-    return borrow(input, options);
+    reset(data, options);
   }
 
-  [[nodiscard]] Status borrow(std::span<const std::byte> input, const Options &options) {
-    rootValue_.reset();
-    owned_.reset();
-    capacity_ = 0;
-    data_ = input.data();
-    size_ = input.size();
-    options_ = options;
-    return validate();
+  void reset(std::span<const std::byte> data, const Options &options) {
+    Nbt nbt = Nbt::parse(data, options);
+    std::swap(*this, nbt);
   }
 
-  [[nodiscard]] Status replaceBorrowed(std::span<const std::byte> input) {
-    if (owned_) {
-      throw std::logic_error("NBT input is owned");
-    }
-    data_ = input.data();
-    size_ = input.size();
-    return validate();
-  }
-
-  [[nodiscard]] Status take(std::unique_ptr<std::byte[]> input, std::size_t size) {
+  template <typename Container>
+  void reset(const Container &data) {
     Options options;
-    return take(std::move(input), size, options);
+    reset(data, options);
   }
 
-  [[nodiscard]] Status take(std::unique_ptr<std::byte[]> input, std::size_t size, const Options &options) {
-    rootValue_.reset();
-    owned_ = std::move(input);
-    data_ = owned_.get();
-    size_ = size;
-    capacity_ = size;
-    options_ = options;
-    return validate();
+  template <typename Container>
+  void reset(const Container &data, const Options &options) {
+    Nbt nbt = Nbt::parse(data, options);
+    std::swap(*this, nbt);
   }
 
-  [[nodiscard]] Status feed(std::span<const std::byte> chunk) {
+  template <typename Container>
+  void append(const Container &chunk) {
     Options options;
-    return feed(chunk, options);
+    append(chunk, options);
   }
 
-  [[nodiscard]] Status feed(std::span<const std::byte> chunk, const Options &options) {
-    if (!accumulating_) {
+  template <typename Container>
+  void append(const Container &chunk, const Options &options) {
+    append(std::as_bytes(chunk), options);
+  }
+
+  void append(std::span<const std::byte> chunk) {
+    Options options;
+    append(chunk, options);
+  }
+
+  void append(std::span<const std::byte> chunk, const Options &options) {
+    if (status() != nbt::Nbt::Status::NeedMoreData) {
       rootValue_.reset();
       options_ = options;
-      accumulating_ = true;
+      status_ = nbt::Nbt::Status::NeedMoreData;
     }
     const auto requiredCapacity = size_ + chunk.size();
-    if (!owned_ || requiredCapacity > capacity_) {
+    if (bufferType_ == Nbt::BufferType::View || requiredCapacity > capacity_) [[likely]] {
       const auto grownCapacity = std::max(requiredCapacity, std::max<std::size_t>(64, capacity_ * 2));
-      auto replacement = std::make_unique<std::byte[]>(grownCapacity);
+
+      std::unique_ptr<std::byte[], BufferFree> replacement(new (std::nothrow) std::byte[grownCapacity], freeBufferOwner);
       if (size_ > 0) {
-        std::memcpy(replacement.get(), data_, size_);
+        std::memcpy(replacement.get(), data_.get(), size_);
       }
-      owned_ = std::move(replacement);
-      data_ = owned_.get();
+
+      data_.swap(replacement);
       capacity_ = grownCapacity;
+      bufferType_ = Nbt::BufferType::Ptr;
     }
-    if (!chunk.empty()) {
-      std::memcpy(owned_.get() + size_, chunk.data(), chunk.size());
+
+    if (!chunk.empty()) [[likely]] {
+      std::memcpy(data_.get() + size_, chunk.data(), chunk.size());
     }
+
     size_ = requiredCapacity;
-    return validate();
+
+    validate();
   }
 
   void clear() noexcept {
+    data_.reset();
     rootValue_.reset();
-    owned_.reset();
-    data_ = nullptr;
+    status_ = nbt::Nbt::Status::Empty;
     size_ = 0;
     capacity_ = 0;
     encodedSize_ = 0;
+    position_ = 0;
+    bufferType_ = Nbt::BufferType::View;
     nodes_.clear();
-    complete_ = false;
-    accumulating_ = false;
+  }
+
+  [[nodiscard]] nbt::Nbt::Status status() const noexcept {
+    return status_;
   }
 
   [[nodiscard]] bool complete() const noexcept {
-    return complete_;
+    return status() == nbt::Nbt::Status::Complete;
   }
 
   [[nodiscard]] bool ownsBytes() const noexcept {
-    return owned_ != nullptr;
+    return bufferType_ == Nbt::BufferType::Ptr;
   }
 
   [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
-    return {data_, size_};
+    return {data_.get(), size_};
   }
 
   [[nodiscard]] View root() const {
-    if (!complete_ || nodes_.empty()) {
+    if (status() == nbt::Nbt::Status::Error || status() == nbt::Nbt::Status::Empty || nodes_.empty()) {
+      if (status() == nbt::Nbt::Status::Error) {
+        throw std::logic_error("NBT is invalid");
+      }
       throw std::logic_error("NBT is incomplete");
     }
-    return View(this, 0);
+    return {this, 0};
   }
 
   [[nodiscard]] Value materialize() const {
@@ -356,8 +487,8 @@ public:
   }
 
   [[nodiscard]] std::vector<std::byte> encode(Format format = Format::File) const {
-    if (complete_ && format == options_.format) {
-      return {data_, data_ + encodedSize_};
+    if (complete() && format == options_.format) {
+      return {data_.get(), data_.get() + encodedSize_};
     }
 
     Value value = materialize();
@@ -426,20 +557,19 @@ public:
     return {.type = Type::LongArray, .name = std::move(name), .payload = std::move(values)};
   }
 
-  [[nodiscard]] static Value list(std::string name, Type elementType, std::vector<Value> values = {}) {
-    return {.type = Type::List, .name = std::move(name), .payload = List{.elementType = elementType, .values = std::move(values)}};
+  [[nodiscard]] static Value list(std::string name, Type type, std::vector<Value> values = {}) {
+    return {.type = Type::List, .name = std::move(name), .payload = Value::List(type, std::move(values))};
   }
 
   [[nodiscard]] static Value compound(std::string name, std::vector<Value> values = {}) {
-    return {.type = Type::Compound, .name = std::move(name), .payload = Compound{std::move(values)}};
+    return {.type = Type::Compound, .name = std::move(name), .payload = Value::Compound{std::move(values)}};
   }
 
 private:
   class NeedMore final {};
 
-  [[nodiscard]] Status validate() {
+  void validate() {
     nodes_.clear();
-    complete_ = false;
     position_ = 0;
     try {
       if (size_ > options_.maxInputBytes) {
@@ -460,12 +590,11 @@ private:
       if (options_.requireCompleteInput && position_ != size_) {
         throw Error("trailing NBT data", position_);
       }
-      complete_ = true;
-      return Status::Complete;
+      status_ = nbt::Nbt::Status::Complete;
     } catch (const NeedMore &) {
       nodes_.clear();
       position_ = 0;
-      return Status::NeedMoreData;
+      status_ = nbt::Nbt::Status::NeedMoreData;
     }
   }
 
@@ -646,7 +775,7 @@ private:
   }
 
   [[nodiscard]] std::string_view text(std::size_t offset, std::size_t size) const {
-    return {reinterpret_cast<const char *>(data_ + offset), size};
+    return {reinterpret_cast<const char *>(data_.get() + offset), size};
   }
 
   [[nodiscard]] Value materialize(std::uint32_t nodeIndex) const {
@@ -706,7 +835,7 @@ private:
       break;
     }
     case Type::List: {
-      List list{.elementType = node.elementType, .values = {}};
+      Value::List list(node.elementType, {});
       list.values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
         list.values.push_back(View(this, nodeIndex).child(index).materialize());
@@ -715,7 +844,7 @@ private:
       break;
     }
     case Type::Compound: {
-      Compound compound;
+      Value::Compound compound;
       compound.values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
         compound.values.push_back(View(this, nodeIndex).child(index).materialize());
@@ -816,7 +945,7 @@ private:
       break;
     }
     case Type::List: {
-      const auto &listValue = std::get<List>(value.payload);
+      const auto &listValue = std::get<Value::List>(value.payload);
       appendNumber(output, static_cast<std::uint8_t>(listValue.elementType));
       appendLength(output, listValue.values.size());
       for (const auto &element : listValue.values) {
@@ -828,7 +957,7 @@ private:
       break;
     }
     case Type::Compound:
-      for (const auto &child : std::get<Compound>(value.payload).values) {
+      for (const auto &child : std::get<Value::Compound>(value.payload).values) {
         appendNamed(output, child);
       }
       output.push_back(std::byte{});
@@ -848,18 +977,20 @@ private:
     return temporary.size();
   }
 
+  using BufferFree = void (*)(std::byte *);
+
   static constexpr std::uint32_t noNode = (std::numeric_limits<std::uint32_t>::max)();
-  std::unique_ptr<std::byte[]> owned_;
+
+  std::unique_ptr<std::byte[], BufferFree> data_{nullptr, freeBufferView};
   std::optional<Value> rootValue_;
-  const std::byte *data_{};
-  std::size_t size_{};
-  std::size_t capacity_{};
-  std::size_t encodedSize_{};
-  mutable std::size_t position_{};
-  Options options_;
-  std::vector<Node> nodes_;
-  bool complete_{};
-  bool accumulating_{};
+  nbt::Nbt::Options options_;
+  nbt::Nbt::Status status_{nbt::Nbt::Status::Empty};
+  nbt::Nbt::BufferType bufferType_{nbt::Nbt::BufferType::View};
+  std::size_t size_{0};
+  std::size_t capacity_{0};
+  std::size_t encodedSize_{0};
+  mutable std::size_t position_{0};
+  std::vector<nbt::Nbt::Node> nodes_;
 };
 
 using NbtView = Nbt::View;

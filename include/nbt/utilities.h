@@ -69,10 +69,8 @@ public:
     const auto fileBytes = readFile(path);
     const auto resolved = compression == Compression::Auto ? detectCompression(fileBytes) : compression;
     auto bytes = resolved == Compression::None ? fileBytes : inflate(fileBytes, resolved);
-    auto owned = std::make_unique<std::byte[]>(bytes.size());
-    std::copy(bytes.begin(), bytes.end(), owned.get());
-    Nbt document;
-    if (document.take(std::move(owned), bytes.size(), options) != Nbt::Status::Complete) {
+    Nbt document = nbt::Nbt::parse(bytes, options);
+    if (!document.complete()) [[unlikely]] {
       throw nbt::Error("truncated NBT file", bytes.size());
     }
     return document;
@@ -406,7 +404,7 @@ private:
       break;
     case Nbt::Type::List: {
       output.push_back('[');
-      const auto &values = std::get<Nbt::List>(value.payload).values;
+      const auto &values = std::get<Nbt::Value::List>(value.payload).values;
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output += pretty ? ", " : ",";
@@ -418,7 +416,7 @@ private:
     }
     case Nbt::Type::Compound: {
       output.push_back('{');
-      const auto &values = std::get<Nbt::Compound>(value.payload).values;
+      const auto &values = std::get<Nbt::Value::Compound>(value.payload).values;
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output.push_back(',');
