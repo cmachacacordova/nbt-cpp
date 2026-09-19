@@ -19,9 +19,9 @@ void check(bool condition) {
   }
 }
 
-nbt::Nbt::Value sample() {
-  using N = nbt::Nbt;
-  return N::compound("root", {N::int32("answer", 42), N::string("name", "Alex"), N::list("values", N::Type::Int, {N::int32("", 1), N::int32("", 2)}), N::compound("nested", {N::float64("value", 1.5)})});
+nbt::Tag sample() {
+  return nbt::Tag::compound(
+      "root", {nbt::Tag::int32("answer", 42), nbt::Tag::string("name", "Alex"), nbt::Tag::list("values", nbt::Type::Int, {nbt::Tag::int32("", 1), nbt::Tag::int32("", 2)}), nbt::Tag::compound("nested", {nbt::Tag::float64("value", 1.5)})});
 }
 
 void testBorrowedLazyRead() {
@@ -34,9 +34,9 @@ void testBorrowedLazyRead() {
   check(document.root().name() == "root");
   check(document.root().begin() == 0);
   check(document.root().end() == bytes.size());
-  check(document.root().find("answer").as<N::Type::Int>() == 42);
-  check(document.root().find("name").as<N::Type::String>() == "Alex");
-  check(document.root().find("values").child(1).as<N::Type::Int>() == 2);
+  check(document.root().find("answer").as<nbt::Type::Int>() == 42);
+  check(document.root().find("name").as<nbt::Type::String>() == "Alex");
+  check(document.root().find("values").child(1).as<nbt::Type::Int>() == 2);
   check(document.encode() == bytes);
 }
 
@@ -46,7 +46,7 @@ void testOwnedRead() {
   N document = N::parse(source);
   check(document.complete());
   check(document.ownsBytes());
-  check(document.materialize().type == N::Type::Compound);
+  check(document.materialize().type == nbt::Type::Compound);
 }
 
 void testContinuation() {
@@ -54,15 +54,15 @@ void testContinuation() {
   const auto bytes = N(sample()).encode();
   const std::span<const std::byte> view(bytes);
   N borrowed = N::parse(view.first(bytes.size() / 2));
-  check(borrowed.status() == N::Status::NeedMoreData);
+  check(borrowed.status() == nbt::Status::NeedMoreData);
   borrowed.reset(view);
-  check(borrowed.status() == N::Status::Complete);
+  check(borrowed.status() == nbt::Status::Complete);
 
   N append;
   append.append(view.first(view.size() / 2));
-  check(append.status() == N::Status::NeedMoreData);
+  check(append.status() == nbt::Status::NeedMoreData);
   append.append(view.subspan(view.size() / 2));
-  check(append.status() == N::Status::Complete);
+  check(append.status() == nbt::Status::Complete);
   check(append.ownsBytes());
 }
 
@@ -70,12 +70,12 @@ void testNetworkFormat() {
   using N = nbt::Nbt;
   auto root = sample();
   root.name.clear();
-  const auto bytes = N(root).encode(N::Format::Network);
-  N::Options options;
-  options.format = N::Format::Network;
+  const auto bytes = N(root).encode(nbt::Format::Network);
+  nbt::Options options;
+  options.format = nbt::Format::Network;
   N document = N::parse(std::as_bytes(std::span(bytes)), options);
-  check(document.status() == N::Status::Complete);
-  check(document.root().type() == N::Type::Compound);
+  check(document.status() == nbt::Status::Complete);
+  check(document.root().type() == nbt::Type::Compound);
 }
 
 void testEveryTruncation() {
@@ -83,7 +83,7 @@ void testEveryTruncation() {
   const auto bytes = N(sample()).encode();
   for (std::size_t size = 0; size < bytes.size(); ++size) {
     N document = N::parse(std::as_bytes(std::span(bytes).first(size)));
-    check(document.status() == N::Status::NeedMoreData);
+    check(document.status() == nbt::Status::NeedMoreData);
   }
 }
 
@@ -101,7 +101,7 @@ void testUtilities() {
   for (const auto compression : {U::Compression::None, U::Compression::Gzip, U::Compression::Zlib}) {
     U::save(path, document, compression);
     auto loaded = U::load(path);
-    check(loaded.root().find("answer").as<N::Type::Int>() == 42);
+    check(loaded.root().find("answer").as<nbt::Type::Int>() == 42);
   }
   std::filesystem::remove(path);
 }

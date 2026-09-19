@@ -43,98 +43,264 @@ private:
   std::size_t offset_;
 };
 
-class Nbt final {
+enum class BufferType : std::uint8_t { Raw, View };
+
+enum class Type : std::uint8_t { End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray };
+
+enum class Format : std::uint8_t { File, Network };
+
+enum class Status : std::uint8_t { Empty, Complete, NeedMoreData, Error };
+
+struct Options {
+  std::size_t maxDepth{512};
+  std::size_t maxContainerElements{static_cast<std::size_t>(16U * 1024U * 1024U)};
+  std::size_t maxTotalNodes{static_cast<std::size_t>(64U * 1024U * 1024U)};
+  std::size_t maxInputBytes{static_cast<std::size_t>(1024U * 1024U * 1024U)};
+  bool requireCompleteInput{true};
+  Format format{Format::File};
+};
+
+struct Tag {
+
+  using Byte = std::int8_t;            ///< Signed 8-bit TAG_Byte payload.
+  using Short = std::int16_t;          ///< Signed 16-bit TAG_Short payload.
+  using Int = std::int32_t;            ///< Signed 32-bit TAG_Int payload.
+  using Long = std::int64_t;           ///< Signed 64-bit TAG_Long payload.
+  using Float = float;                 ///< IEEE-754 TAG_Float payload.
+  using Double = double;               ///< IEEE-754 TAG_Double payload.
+  using String = std::string;          ///< Owning UTF-8 TAG_String payload.
+  using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
+  using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
+  using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
+
+  struct List {
+    Type elementType{Type::End};
+    std::vector<Tag> values; ///< List elements in serialized order.
+
+    List() = default;
+
+    /**
+     * @brief Constructs a list by taking ownership of existing elements.
+     *
+     * @param value
+     */
+    explicit List(Type elementType, std::vector<Tag> value) : elementType(elementType), values(std::move(value)) {
+    }
+
+    /**
+     * @brief Constructs a list from an initializer list.
+     *
+     * @param init
+     */
+    List(std::initializer_list<Tag> init) : values(init) {
+    }
+  };
+
+  /** @brief Ordered collection of named child tags. */
+  struct Compound {
+    std::vector<Tag> values; ///< Child values in serialized order.
+
+    Compound() = default;
+
+    /**
+     * @brief Constructs a compound by taking ownership of existing children.
+     *
+     * @param value
+     */
+    explicit Compound(std::vector<Tag> value) : values(std::move(value)) {
+    }
+
+    /**
+     * @brief Constructs a compound from an initializer list.
+     *
+     * @param init
+     */
+    Compound(std::initializer_list<Tag> init) : values(init) {
+    }
+  };
+
+  using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, List, Compound, ByteArray, IntArray, LongArray>;
+
+  Type type{Type::End};
+  std::string name;
+  Payload payload;
+
+  [[nodiscard]] static Tag int8(std::string name, std::int8_t value) {
+    return {.type = Type::Byte, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag int16(std::string name, std::int16_t value) {
+    return {.type = Type::Short, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag int32(std::string name, std::int32_t value) {
+    return {.type = Type::Int, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag int64(std::string name, std::int64_t value) {
+    return {.type = Type::Long, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag float32(std::string name, float value) {
+    return {.type = Type::Float, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag float64(std::string name, double value) {
+    return {.type = Type::Double, .name = std::move(name), .payload = value};
+  }
+
+  [[nodiscard]] static Tag string(std::string name, std::string value) {
+    return {.type = Type::String, .name = std::move(name), .payload = std::move(value)};
+  }
+
+  [[nodiscard]] static Tag byteArray(std::string name, std::vector<std::int8_t> values) {
+    return {.type = Type::ByteArray, .name = std::move(name), .payload = std::move(values)};
+  }
+
+  [[nodiscard]] static Tag intArray(std::string name, std::vector<std::int32_t> values) {
+    return {.type = Type::IntArray, .name = std::move(name), .payload = std::move(values)};
+  }
+
+  [[nodiscard]] static Tag longArray(std::string name, std::vector<std::int64_t> values) {
+    return {.type = Type::LongArray, .name = std::move(name), .payload = std::move(values)};
+  }
+
+  [[nodiscard]] static Tag list(std::string name, Type type, std::vector<Tag> values = {}) {
+    return {.type = Type::List, .name = std::move(name), .payload = Tag::List(type, std::move(values))};
+  }
+
+  [[nodiscard]] static Tag compound(std::string name, std::vector<Tag> values = {}) {
+    return {.type = Type::Compound, .name = std::move(name), .payload = Tag::Compound{std::move(values)}};
+  }
+};
+
+class Buffer {
+private:
+  inline static std::allocator<std::byte> byteAlloc{};
+
+  std::byte *data_;
+  std::size_t size_;
+  std::size_t capacity_;
+
+  BufferType type_;
+
 public:
-  enum class Type : std::uint8_t { End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray };
-  enum class Format : std::uint8_t { File, Network };
-  enum class Status : std::uint8_t { Empty, Complete, NeedMoreData, Error };
-  enum class BufferType : std::uint8_t { Ptr, View };
+  Buffer(const Buffer &) = delete;
+  Buffer &operator=(const Buffer &) = delete;
 
-  struct Options {
-    std::size_t maxDepth{512};
-    std::size_t maxContainerElements{static_cast<std::size_t>(16U * 1024U * 1024U)};
-    std::size_t maxTotalNodes{static_cast<std::size_t>(64U * 1024U * 1024U)};
-    std::size_t maxInputBytes{static_cast<std::size_t>(1024U * 1024U * 1024U)};
-    bool requireCompleteInput{true};
-    Format format{Format::File};
-  };
+  Buffer(Buffer &&) noexcept = default;
+  Buffer &operator=(Buffer &&) noexcept = default;
 
-  struct Value {
+  Buffer() : data_{nullptr}, size_{0}, capacity_{0}, type_{BufferType::View} {
+  }
 
-    using Byte = std::int8_t;            ///< Signed 8-bit TAG_Byte payload.
-    using Short = std::int16_t;          ///< Signed 16-bit TAG_Short payload.
-    using Int = std::int32_t;            ///< Signed 32-bit TAG_Int payload.
-    using Long = std::int64_t;           ///< Signed 64-bit TAG_Long payload.
-    using Float = float;                 ///< IEEE-754 TAG_Float payload.
-    using Double = double;               ///< IEEE-754 TAG_Double payload.
-    using String = std::string;          ///< Owning UTF-8 TAG_String payload.
-    using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
-    using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
-    using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
+  Buffer(std::span<const std::byte> view) : Buffer() {
+    data_ = const_cast<std::byte *>(view.data());
+    size_ = view.size_bytes();
+    type_ = BufferType::View;
+  }
 
-    struct List {
-      Type elementType{Type::End};
-      std::vector<Value> values; ///< List elements in serialized order.
+  Buffer(std::size_t capacity) : Buffer() {
+    try {
+      const auto grownCapacity = std::max({static_cast<unsigned long long>(64), capacity});
+      data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
+      size_ = 0;
+      capacity_ = grownCapacity;
+      type_ = BufferType::Raw;
+    } catch (const std::bad_alloc &e) {
+      data_ = nullptr;
+      size_ = capacity_ = 0;
+      type_ = BufferType::View;
+    }
+  }
 
-      List() = default;
+  std::pair<void *, std::size_t> preallocate(std::size_t min, std::size_t newAllocationSize, std::size_t max = std::numeric_limits<std::size_t>::max()) {
+    if (min < capacity_) {
+      return std::make_pair(data_ + size_, capacity_);
+    }
 
-      /**
-       * @brief Constructs a list by taking ownership of existing elements.
-       *
-       * @param value
-       */
-      explicit List(Type elementType, std::vector<Value> value) : elementType(elementType), values(std::move(value)) {
+    if (capacity_ >= max) {
+      return std::make_pair(nullptr, 0);
+    }
+
+    const auto grownCapacity = capacity_ + newAllocationSize;
+    std::byte *replacement = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
+
+    if (size_ > 0) {
+      std::memcpy(replacement, data_, size_);
+      if (type_ == BufferType::Raw) {
+        std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
+        data_ = nullptr;
       }
+    }
 
-      /**
-       * @brief Constructs a list from an initializer list.
-       *
-       * @param init
-       */
-      List(std::initializer_list<Value> init) : values(init) {
-      }
-    };
+    capacity_ = grownCapacity - size_;
+    data_ = replacement;
+    type_ = BufferType::Raw;
 
-    /** @brief Ordered collection of named child tags. */
-    struct Compound {
-      std::vector<Value> values; ///< Child values in serialized order.
+    return std::make_pair(data_ + size_, capacity_);
+  }
 
-      Compound() = default;
+  void postallocate(std::size_t n) noexcept {
+    capacity_ -= n;
+    size_ += n;
+  }
 
-      /**
-       * @brief Constructs a compound by taking ownership of existing children.
-       *
-       * @param value
-       */
-      explicit Compound(std::vector<Value> value) : values(std::move(value)) {
-      }
+  void append(const std::byte *begin, const std::byte *end) {
+    auto [buffer, size] = preallocate(static_cast<std::size_t>(end - begin), ((static_cast<size_t>(end - begin) / 64) + 1) * 64);
+    if (begin != nullptr && begin != end && begin < end) [[likely]] {
+      std::memcpy(static_cast<std::byte *>(buffer), begin, static_cast<std::size_t>(end - begin));
+      postallocate(static_cast<std::size_t>(end - begin));
+    }
+  }
 
-      /**
-       * @brief Constructs a compound from an initializer list.
-       *
-       * @param init
-       */
-      Compound(std::initializer_list<Value> init) : values(init) {
-      }
-    };
+  void swap(Buffer &other) noexcept {
+    using std::swap;
+    swap(data_, other.data_);
+    swap(size_, other.size_);
+    swap(capacity_, other.capacity_);
+    swap(type_, other.type_);
+  }
 
-    using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, List, Compound, ByteArray, IntArray, LongArray>;
+  void reset() noexcept {
+    data_ = nullptr;
+    size_ = 0;
+    capacity_ = 0;
+    type_ = BufferType::View;
+  }
 
-    Type type{Type::End};
-    std::string name;
-    Payload payload;
-  };
+  [[nodiscard]] std::byte *data() const {
+    return data_;
+  }
 
-  [[nodiscard]] static Nbt parse(std::span<const std::byte> data) {
+  [[nodiscard]] std::size_t size() const {
+    return size_;
+  }
+
+  [[nodiscard]] std::size_t capacity() const {
+    return capacity_;
+  }
+
+  ~Buffer() {
+    if (type_ != BufferType::View) {
+      std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
+    }
+  }
+};
+
+template <typename BufferT = nbt::Buffer>
+class NbtParser final {
+public:
+  [[nodiscard]] static NbtParser parse(std::span<const std::byte> data) {
     Options options;
     return parse(data, options);
   }
 
-  [[nodiscard]] static Nbt parse(std::span<const std::byte> data, const Options &options) {
-    nbt::Nbt document;
+  [[nodiscard]] static NbtParser parse(std::span<const std::byte> data, const Options &options) {
+    nbt::NbtParser<BufferT> document;
 
     if (data.size() == 0) {
-      document.status_ = nbt::Nbt::Status::NeedMoreData;
+      document.status_ = Status::NeedMoreData;
       return document;
     }
 
@@ -149,35 +315,32 @@ public:
   }
 
   template <typename Container>
-  [[nodiscard]] static Nbt parse(const Container &data) {
+  [[nodiscard]] static NbtParser parse(const Container &data) {
     Options options;
     return parse(data, options);
   }
 
   template <typename Container>
-  [[nodiscard]] static Nbt parse(const Container &data, const Options &options) {
+  [[nodiscard]] static NbtParser parse(const Container &data, const Options &options) {
     std::span<const std::byte> view = std::as_bytes(std::span(data));
 
     if (view.empty()) {
-      Nbt document;
-      document.status_ = nbt::Nbt::Status::NeedMoreData;
+      NbtParser document;
+      document.status_ = Status::NeedMoreData;
       return document;
     }
 
-    Buffer bytes(view.size());
-
-    if (bytes.data == nullptr) {
-      nbt::Nbt document;
-      document.status_ = nbt::Nbt::Status::Error;
+    Buffer bytes;
+    auto [buffer, size] = bytes.preallocate(view.size_bytes(), view.size_bytes() * 2);
+    if (buffer == nullptr) [[unlikely]] {
+      nbt::NbtParser<BufferT> document;
+      document.status_ = Status::Error;
       return document;
     }
+    std::memcpy(buffer, view.data(), size);
+    bytes.postallocate(view.size());
 
-    std::memcpy(bytes.data, view.data(), view.size());
-
-    bytes.size += view.size();
-    bytes.capacity -= view.size();
-
-    nbt::Nbt document;
+    nbt::NbtParser<BufferT> document;
     document.data_.swap(bytes);
     document.encodedSize_ = 0;
     document.options_ = options;
@@ -198,59 +361,6 @@ private:
     std::uint16_t nameSize{};
     Type type{Type::End};
     Type elementType{Type::End};
-  };
-
-  struct Buffer {
-    inline static std::allocator<std::byte> byteAlloc{};
-
-    std::byte *data;
-    std::size_t size;
-    std::size_t capacity;
-
-    nbt::Nbt::BufferType type;
-
-    Buffer() : data{nullptr}, size{0}, capacity{0}, type{nbt::Nbt::BufferType::View} {
-    }
-
-    Buffer(std::span<const std::byte> view) : Buffer() {
-      this->data = const_cast<std::byte *>(view.data());
-      this->size = view.size_bytes();
-      this->type = nbt::Nbt::BufferType::View;
-    }
-
-    Buffer(std::size_t capacity) : Buffer() {
-      try {
-        this->data = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, capacity);
-        this->size = 0;
-        this->capacity = capacity;
-        this->type = nbt::Nbt::BufferType::Ptr;
-      } catch (const std::bad_alloc &e) {
-        this->data = nullptr;
-        this->size = this->capacity = 0;
-        this->type = nbt::Nbt::BufferType::View;
-      }
-    }
-
-    void swap(Buffer &other) noexcept {
-      using std::swap;
-      swap(data, other.data);
-      swap(size, other.size);
-      swap(capacity, other.capacity);
-      swap(type, other.type);
-    }
-
-    void reset() {
-      this->data = nullptr;
-      this->size = 0;
-      this->capacity = 0;
-      this->type = nbt::Nbt::BufferType::View;
-    }
-
-    ~Buffer() {
-      if (type != nbt::Nbt::BufferType::View) {
-        std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data, capacity);
-      }
-    }
   };
 
 public:
@@ -327,7 +437,7 @@ public:
         return owner_->text(offset + 2, size);
       } else if constexpr (t == Type::ByteArray) {
         const auto count = owner_->readNumber<std::int32_t>(node().payload);
-        return std::span<const std::byte>{owner_->data_.data + node().payload + 4, static_cast<std::size_t>(count)};
+        return std::span<const std::byte>{owner_->data_.data() + node().payload + 4, static_cast<std::size_t>(count)};
       } else if constexpr (t == Type::IntArray) {
         return std::get<std::vector<std::int32_t>>(materialize().payload);
       } else if constexpr (t == Type::LongArray) {
@@ -337,14 +447,14 @@ public:
       }
     }
 
-    [[nodiscard]] Value materialize() const {
+    [[nodiscard]] Tag materialize() const {
       return owner_->materialize(index_);
     }
 
   private:
-    friend class Nbt;
+    friend class NbtParser;
 
-    View(const Nbt *owner, std::uint32_t index) : owner_(owner), index_(index) {
+    View(const NbtParser *owner, std::uint32_t index) : owner_(owner), index_(index) {
     }
 
     [[nodiscard]] const Node &node() const {
@@ -360,20 +470,32 @@ public:
       }
     }
 
-    const Nbt *owner_{};
+    const NbtParser *owner_{};
     const std::uint32_t index_{};
   };
 
-  Nbt() = default;
+  NbtParser() = default;
 
-  Nbt(Value rootValue) : Nbt() {
+  NbtParser(Tag rootValue) : NbtParser() {
     rootValue_ = std::move(rootValue);
   }
 
-  Nbt(const Nbt &) = delete;
-  Nbt &operator=(const Nbt &) = delete;
-  Nbt(Nbt &&) noexcept = default;
-  Nbt &operator=(Nbt &&) noexcept = default;
+  NbtParser(const NbtParser &) = delete;
+  NbtParser &operator=(const NbtParser &) = delete;
+  NbtParser(NbtParser &&) noexcept = default;
+  NbtParser &operator=(NbtParser &&) noexcept = default;
+
+  void swap(NbtParser &nbt) noexcept {
+    using std::swap;
+
+    data_.swap(nbt.data_);
+    swap(rootValue_, nbt.rootValue_);
+    swap(options_, nbt.options_);
+    swap(status_, nbt.status_);
+    swap(encodedSize_, nbt.encodedSize_);
+    swap(position_, nbt.position_);
+    swap(nodes_, nbt.nodes_);
+  }
 
   void reset(std::span<const std::byte> data) {
     Options options;
@@ -381,8 +503,8 @@ public:
   }
 
   void reset(std::span<const std::byte> data, const Options &options) {
-    Nbt nbt = Nbt::parse(data, options);
-    std::swap(*this, nbt);
+    NbtParser nbt = NbtParser::parse(data, options);
+    swap(nbt);
   }
 
   template <typename Container>
@@ -393,8 +515,8 @@ public:
 
   template <typename Container>
   void reset(const Container &data, const Options &options) {
-    Nbt nbt = Nbt::parse(data, options);
-    std::swap(*this, nbt);
+    NbtParser nbt = NbtParser::parse(data, options);
+    swap(nbt);
   }
 
   template <typename Container>
@@ -414,33 +536,19 @@ public:
   }
 
   void append(std::span<const std::byte> chunk, const Options &options) {
-    if (status() != nbt::Nbt::Status::NeedMoreData) {
+    if (chunk.empty()) {
+      return;
+    }
+
+    if (status_ != Status::NeedMoreData) {
       rootValue_.reset();
       options_ = options;
-      status_ = nbt::Nbt::Status::NeedMoreData;
+      status_ = Status::NeedMoreData;
     }
 
-    const auto requiredCapacity = data_.size + chunk.size();
-    if (data_.type == Nbt::BufferType::View || requiredCapacity > data_.capacity) [[likely]] {
-      const auto grownCapacity = std::max(requiredCapacity, std::max<std::size_t>(64, data_.capacity * 2));
-
-      Buffer replacement(grownCapacity);
-
-      if (data_.size > 0) {
-        std::memcpy(replacement.data, data_.data, data_.size);
-      }
-      replacement.size = data_.size;
-
-      data_.swap(replacement);
-      data_.capacity = grownCapacity;
-      data_.type = Nbt::BufferType::Ptr;
+    if (chunk.size_bytes() > 0) [[likely]] {
+      data_.append(chunk.data(), chunk.data() + chunk.size_bytes());
     }
-
-    if (!chunk.empty()) [[likely]] {
-      std::memcpy(data_.data + data_.size, chunk.data(), chunk.size());
-    }
-
-    data_.size = requiredCapacity;
 
     validate();
   }
@@ -448,42 +556,39 @@ public:
   void clear() noexcept {
     data_.reset();
     rootValue_.reset();
-    status_ = nbt::Nbt::Status::Empty;
-    data_.size = 0;
-    data_.capacity = 0;
+    status_ = Status::Empty;
     encodedSize_ = 0;
     position_ = 0;
-    data_.type = Nbt::BufferType::View;
     nodes_.clear();
   }
 
-  [[nodiscard]] nbt::Nbt::Status status() const noexcept {
+  [[nodiscard]] Status status() const noexcept {
     return status_;
   }
 
   [[nodiscard]] bool complete() const noexcept {
-    return status() == nbt::Nbt::Status::Complete;
+    return status_ == Status::Complete;
   }
 
   [[nodiscard]] bool ownsBytes() const noexcept {
-    return data_.type == Nbt::BufferType::Ptr;
+    return data_.capacity() > 0;
   }
 
   [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
-    return {data_.data, data_.size};
+    return {data_.data(), data_.size()};
   }
 
   [[nodiscard]] View root() const {
-    if (status() == nbt::Nbt::Status::Error || status() == nbt::Nbt::Status::Empty || nodes_.empty()) {
-      if (status() == nbt::Nbt::Status::Error) {
-        throw std::logic_error("NBT is invalid");
-      }
+    if (status_ == Status::Error) {
+      throw std::logic_error("NBT is invalid");
+    }
+    if (status_ == Status::Empty || nodes_.empty()) {
       throw std::logic_error("NBT is incomplete");
     }
     return {this, 0};
   }
 
-  [[nodiscard]] Value materialize() const {
+  [[nodiscard]] Tag materialize() const {
     if (rootValue_) {
       return *rootValue_;
     }
@@ -492,10 +597,10 @@ public:
 
   [[nodiscard]] std::vector<std::byte> encode(Format format = Format::File) const {
     if (complete() && format == options_.format) {
-      return {data_.data, data_.data + encodedSize_};
+      return {data_.data(), data_.data() + encodedSize_};
     }
 
-    Value value = materialize();
+    Tag value = materialize();
     if (format == Format::Network && value.type != Type::Compound) {
       throw std::invalid_argument("Network NBT root must be TAG_Compound");
     }
@@ -514,59 +619,12 @@ public:
     return output;
   }
 
-  [[nodiscard]] static std::size_t encodedSize(const Value &rootValue, Format format = Format::File) {
+  [[nodiscard]] static std::size_t encodedSize(const Tag &rootValue, Format format = Format::File) {
     if (format == Format::Network && rootValue.type != Type::Compound) {
       throw std::invalid_argument("Network NBT root must be TAG_Compound");
     }
-    return valueSize(rootValue, format == Format::File);
-  }
-
-  [[nodiscard]] static Value int8(std::string name, std::int8_t value) {
-    return {.type = Type::Byte, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value int16(std::string name, std::int16_t value) {
-    return {.type = Type::Short, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value int32(std::string name, std::int32_t value) {
-    return {.type = Type::Int, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value int64(std::string name, std::int64_t value) {
-    return {.type = Type::Long, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value float32(std::string name, float value) {
-    return {.type = Type::Float, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value float64(std::string name, double value) {
-    return {.type = Type::Double, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Value string(std::string name, std::string value) {
-    return {.type = Type::String, .name = std::move(name), .payload = std::move(value)};
-  }
-
-  [[nodiscard]] static Value byteArray(std::string name, std::vector<std::int8_t> values) {
-    return {.type = Type::ByteArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Value intArray(std::string name, std::vector<std::int32_t> values) {
-    return {.type = Type::IntArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Value longArray(std::string name, std::vector<std::int64_t> values) {
-    return {.type = Type::LongArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Value list(std::string name, Type type, std::vector<Value> values = {}) {
-    return {.type = Type::List, .name = std::move(name), .payload = Value::List(type, std::move(values))};
-  }
-
-  [[nodiscard]] static Value compound(std::string name, std::vector<Value> values = {}) {
-    return {.type = Type::Compound, .name = std::move(name), .payload = Value::Compound{std::move(values)}};
+    size_t size = valueSize(rootValue, format == Format::File);
+    return format == Format::Network ? size + 1 : size;
   }
 
 private:
@@ -576,7 +634,7 @@ private:
     nodes_.clear();
     position_ = 0;
     try {
-      if (data_.size > options_.maxInputBytes) {
+      if (data_.size() > options_.maxInputBytes) {
         throw Error("NBT input byte limit exceeded", 0);
       }
       if (options_.format == Format::File) {
@@ -591,14 +649,14 @@ private:
         parsePayload(rootIndex, type, 0);
       }
       encodedSize_ = position_;
-      if (options_.requireCompleteInput && position_ != data_.size) {
+      if (options_.requireCompleteInput && position_ != data_.size()) {
         throw Error("trailing NBT data", position_);
       }
-      status_ = nbt::Nbt::Status::Complete;
+      status_ = Status::Complete;
     } catch (const NeedMore &) {
       nodes_.clear();
       position_ = 0;
-      status_ = nbt::Nbt::Status::NeedMoreData;
+      status_ = Status::NeedMoreData;
     }
   }
 
@@ -738,7 +796,7 @@ private:
     using Bits = std::conditional_t<sizeof(T) == 1, std::uint8_t, std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>>;
     Bits bits{};
     for (std::size_t index = 0; index < sizeof(T); ++index) {
-      bits = static_cast<Bits>((bits << 8) | std::to_integer<std::uint8_t>(data_.data[offset + index]));
+      bits = static_cast<Bits>((bits << 8) | std::to_integer<std::uint8_t>(data_.data()[offset + index]));
     }
     if constexpr (std::is_floating_point_v<T>) {
       return std::bit_cast<T>(bits);
@@ -757,7 +815,7 @@ private:
 
   [[nodiscard]] std::byte peek() const {
     require(1);
-    return data_.data[position_];
+    return data_.data()[position_];
   }
 
   void skip(std::size_t count) {
@@ -766,7 +824,7 @@ private:
   }
 
   void require(std::size_t count) const {
-    if (count > data_.size - std::min(data_.size, position_)) {
+    if (count > data_.size() - std::min(data_.size(), position_)) {
       throw NeedMore{};
     }
   }
@@ -779,12 +837,12 @@ private:
   }
 
   [[nodiscard]] std::string_view text(std::size_t offset, std::size_t size) const {
-    return {reinterpret_cast<const char *>(data_.data + offset), size};
+    return {reinterpret_cast<const char *>(data_.data() + offset), size};
   }
 
-  [[nodiscard]] Value materialize(std::uint32_t nodeIndex) const {
+  [[nodiscard]] Tag materialize(std::uint32_t nodeIndex) const {
     const auto &node = nodes_[nodeIndex];
-    Value value;
+    Tag value;
     value.type = node.type;
     value.name.assign(text(node.nameOffset, node.nameSize));
     switch (node.type) {
@@ -807,10 +865,10 @@ private:
       value.payload = readNumber<double>(node.payload);
       break;
     case Type::String:
-      value.payload = std::string(View(this, nodeIndex).as<Type::String>());
+      value.payload = std::string(View(this, nodeIndex).template as<Type::String>());
       break;
     case Type::ByteArray: {
-      const auto bytes = View(this, nodeIndex).as<Type::ByteArray>();
+      const auto bytes = View(this, nodeIndex).template as<Type::ByteArray>();
       std::vector<std::int8_t> result(bytes.size());
       std::memcpy(result.data(), bytes.data(), bytes.size());
       value.payload = std::move(result);
@@ -839,7 +897,7 @@ private:
       break;
     }
     case Type::List: {
-      Value::List list(node.elementType, {});
+      Tag::List list(node.elementType, {});
       list.values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
         list.values.push_back(View(this, nodeIndex).child(index).materialize());
@@ -848,7 +906,7 @@ private:
       break;
     }
     case Type::Compound: {
-      Value::Compound compound;
+      Tag::Compound compound;
       compound.values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
         compound.values.push_back(View(this, nodeIndex).child(index).materialize());
@@ -877,6 +935,13 @@ private:
     }
   }
 
+  static size_t stringSize(std::string_view value) {
+    if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) {
+      throw std::length_error("NBT string exceeds 65535 bytes");
+    }
+    return std::span(value).size_bytes() + 2;
+  }
+
   static void appendString(std::vector<std::byte> &output, std::string_view value) {
     if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) {
       throw std::length_error("NBT string exceeds 65535 bytes");
@@ -893,7 +958,17 @@ private:
     appendNumber(output, static_cast<std::int32_t>(size));
   }
 
-  static void appendNamed(std::vector<std::byte> &output, const Value &value) {
+  static std::size_t namedSize(const Tag &value) {
+    if (value.type == Type::End) {
+      throw std::invalid_argument("named TAG_End");
+    }
+    std::size_t size = stringSize(value.name);
+    size += payloadSize(value);
+    size++;
+    return size;
+  }
+
+  static void appendNamed(std::vector<std::byte> &output, const Tag &value) {
     if (value.type == Type::End) {
       throw std::invalid_argument("named TAG_End");
     }
@@ -902,7 +977,71 @@ private:
     appendPayload(output, value);
   }
 
-  static void appendPayload(std::vector<std::byte> &output, const Value &value) {
+  static std::size_t payloadSize(const Tag &value) {
+    std::size_t size = 0;
+    switch (value.type) {
+    case Type::Byte:
+      size++;
+      break;
+    case Type::Short:
+      size += 2;
+      break;
+    case Type::Float:
+    case Type::Int:
+      size += 4;
+      break;
+    case Type::Double:
+    case Type::Long:
+      size += 8;
+      break;
+    case Type::String:
+      size += stringSize(std::get<std::string>(value.payload));
+      break;
+    case Type::ByteArray: {
+      const auto &values = std::get<std::vector<std::int8_t>>(value.payload);
+      size += 4;
+      const auto bytes = std::as_bytes(std::span(values));
+      size += bytes.size_bytes();
+      break;
+    }
+    case Type::IntArray: {
+      const auto &values = std::get<std::vector<std::int32_t>>(value.payload);
+      size += 4;
+      const auto bytes = std::as_bytes(std::span(values));
+      size += bytes.size_bytes();
+      break;
+    }
+    case Type::LongArray: {
+      const auto &values = std::get<std::vector<std::int64_t>>(value.payload);
+      size += 4;
+      const auto bytes = std::as_bytes(std::span(values));
+      size += bytes.size_bytes();
+      break;
+    }
+    case Type::List: {
+      const auto &listValue = std::get<Tag::List>(value.payload);
+      size += 5;
+      for (const auto &element : listValue.values) {
+        if (element.type != listValue.elementType || !element.name.empty()) {
+          throw std::invalid_argument("invalid TAG_List element");
+        }
+        size += payloadSize(element);
+      }
+      break;
+    }
+    case Type::Compound:
+      for (const auto &child : std::get<Tag::Compound>(value.payload).values) {
+        size += namedSize(child);
+      }
+      size++;
+      break;
+    case Type::End:
+      break;
+    }
+    return size;
+  }
+
+  static void appendPayload(std::vector<std::byte> &output, const Tag &value) {
     switch (value.type) {
     case Type::Byte:
       appendNumber(output, std::get<std::int8_t>(value.payload));
@@ -949,7 +1088,7 @@ private:
       break;
     }
     case Type::List: {
-      const auto &listValue = std::get<Value::List>(value.payload);
+      const auto &listValue = std::get<Tag::List>(value.payload);
       appendNumber(output, static_cast<std::uint8_t>(listValue.elementType));
       appendLength(output, listValue.values.size());
       for (const auto &element : listValue.values) {
@@ -961,7 +1100,7 @@ private:
       break;
     }
     case Type::Compound:
-      for (const auto &child : std::get<Value::Compound>(value.payload).values) {
+      for (const auto &child : std::get<Tag::Compound>(value.payload).values) {
         appendNamed(output, child);
       }
       output.push_back(std::byte{});
@@ -971,27 +1110,29 @@ private:
     }
   }
 
-  [[nodiscard]] static std::size_t valueSize(const Value &value, bool named) {
-    std::vector<std::byte> temporary;
+  [[nodiscard]] static std::size_t valueSize(const Tag &value, bool named) {
+    std::size_t size = 0;
     if (named) {
-      appendNamed(temporary, value);
+      size += namedSize(value);
     } else {
-      appendPayload(temporary, value);
+      size += payloadSize(value);
     }
-    return temporary.size();
+    return size;
   }
 
   static constexpr std::uint32_t noNode = (std::numeric_limits<std::uint32_t>::max)();
 
-  Buffer data_;
+  BufferT data_;
 
-  std::optional<Value> rootValue_;
-  nbt::Nbt::Options options_;
-  nbt::Nbt::Status status_{nbt::Nbt::Status::Empty};
+  std::optional<Tag> rootValue_;
+  Options options_;
+  Status status_{Status::Empty};
   std::size_t encodedSize_{0};
   mutable std::size_t position_{0};
-  std::vector<nbt::Nbt::Node> nodes_;
+  std::vector<Node> nodes_;
 };
+
+using Nbt = NbtParser<nbt::Buffer>;
 
 using NbtView = Nbt::View;
 } // namespace nbt

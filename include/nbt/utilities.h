@@ -34,12 +34,12 @@ class NbtUtilities final {
 public:
   enum class Compression : std::uint8_t { None, Gzip, Zlib, Auto };
 
-  [[nodiscard]] static Nbt::Value parseSnbt(std::string_view input) {
-    Nbt::Options options;
+  [[nodiscard]] static nbt::Tag parseSnbt(std::string_view input) {
+    nbt::Options options;
     return parseSnbt(input, options);
   }
 
-  [[nodiscard]] static Nbt::Value parseSnbt(std::string_view input, const Nbt::Options &options) {
+  [[nodiscard]] static nbt::Tag parseSnbt(std::string_view input, const nbt::Options &options) {
     SnbtReader reader(input, options);
     auto value = reader.readValue({});
     reader.skipWhitespace();
@@ -49,34 +49,38 @@ public:
     return value;
   }
 
-  [[nodiscard]] static std::string toSnbt(const Nbt::Value &value, bool pretty = false) {
+  [[nodiscard]] static std::string toSnbt(const nbt::Tag &value, bool pretty = false) {
     std::string output;
     writeSnbt(output, value, pretty, 0, false);
     return output;
   }
 
-  [[nodiscard]] static Nbt load(const std::filesystem::path &path) {
-    Nbt::Options options;
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path) {
+    nbt::Options options;
     return load(path, Compression::Auto, options);
   }
 
-  [[nodiscard]] static Nbt load(const std::filesystem::path &path, Compression compression) {
-    Nbt::Options options;
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path, Compression compression) {
+    nbt::Options options;
     return load(path, compression, options);
   }
 
-  [[nodiscard]] static Nbt load(const std::filesystem::path &path, Compression compression, const Nbt::Options &options) {
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path, Compression compression, const nbt::Options &options) {
     const auto fileBytes = readFile(path);
     const auto resolved = compression == Compression::Auto ? detectCompression(fileBytes) : compression;
     auto bytes = resolved == Compression::None ? fileBytes : inflate(fileBytes, resolved);
-    Nbt document = nbt::Nbt::parse(bytes, options);
+    Nbt document = nbt::NbtParser<BufferT>::parse(bytes, options);
     if (!document.complete()) [[unlikely]] {
       throw nbt::Error("truncated NBT file", bytes.size());
     }
     return document;
   }
 
-  static void save(const std::filesystem::path &path, const Nbt &document, Compression compression = Compression::None, Nbt::Format format = Nbt::Format::File, int level = Z_DEFAULT_COMPRESSION) {
+  template <typename BufferT = nbt::Buffer>
+  static void save(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, nbt::Format format = nbt::Format::File, int level = Z_DEFAULT_COMPRESSION) {
     if (compression == Compression::Auto) {
       throw std::invalid_argument("Auto compression is invalid for output");
     }
@@ -88,10 +92,10 @@ public:
 private:
   class SnbtReader {
   public:
-    SnbtReader(std::string_view input, const Nbt::Options &options) : input_(input), options_(options) {
+    SnbtReader(std::string_view input, const nbt::Options &options) : input_(input), options_(options) {
     }
 
-    [[nodiscard]] Nbt::Value readValue(std::string name, std::size_t depth = 0) {
+    [[nodiscard]] nbt::Tag readValue(std::string name, std::size_t depth = 0) {
       if (depth > options_.maxDepth) {
         fail("SNBT depth limit exceeded");
       }
@@ -106,7 +110,7 @@ private:
         return readList(std::move(name), depth);
       }
       if (peek() == '"' || peek() == '\'') {
-        return Nbt::string(std::move(name), readQuoted());
+        return nbt::Tag::string(std::move(name), readQuoted());
       }
       return readScalar(std::move(name), readBare());
     }
@@ -193,12 +197,12 @@ private:
       return peek() == '"' || peek() == '\'' ? readQuoted() : readBare();
     }
 
-    [[nodiscard]] Nbt::Value readCompound(std::string name, std::size_t depth) {
+    [[nodiscard]] nbt::Tag readCompound(std::string name, std::size_t depth) {
       expect('{');
-      std::vector<Nbt::Value> values;
+      std::vector<nbt::Tag> values;
       skipWhitespace();
       if (consume('}')) {
-        return Nbt::compound(std::move(name), {});
+        return nbt::Tag::compound(std::move(name), {});
       }
       while (true) {
         if (values.size() >= options_.maxContainerElements) {
@@ -212,18 +216,18 @@ private:
         }
         expect(',');
       }
-      return Nbt::compound(std::move(name), std::move(values));
+      return nbt::Tag::compound(std::move(name), std::move(values));
     }
 
-    [[nodiscard]] Nbt::Value readList(std::string name, std::size_t depth) {
+    [[nodiscard]] nbt::Tag readList(std::string name, std::size_t depth) {
       expect('[');
       skipWhitespace();
       if (position_ + 1 < input_.size() && input_[position_ + 1] == ';' && (peek() == 'B' || peek() == 'I' || peek() == 'L')) {
         return readTypedArray(std::move(name));
       }
-      std::vector<Nbt::Value> values;
+      std::vector<nbt::Tag> values;
       if (consume(']')) {
-        return Nbt::list(std::move(name), Nbt::Type::End, {});
+        return nbt::Tag::list(std::move(name), nbt::Type::End, {});
       }
       auto first = readValue({}, depth + 1);
       const auto elementType = first.type;
@@ -239,25 +243,25 @@ private:
           fail("SNBT element limit exceeded");
         }
       }
-      return Nbt::list(std::move(name), elementType, std::move(values));
+      return nbt::Tag::list(std::move(name), elementType, std::move(values));
     }
 
-    [[nodiscard]] Nbt::Value readTypedArray(std::string name) {
+    [[nodiscard]] nbt::Tag readTypedArray(std::string name) {
       const auto kind = input_[position_++];
       expect(';');
       if (kind == 'B') {
         std::vector<std::int8_t> values;
         readArrayValues(values);
-        return Nbt::byteArray(std::move(name), std::move(values));
+        return nbt::Tag::byteArray(std::move(name), std::move(values));
       }
       if (kind == 'I') {
         std::vector<std::int32_t> values;
         readArrayValues(values);
-        return Nbt::intArray(std::move(name), std::move(values));
+        return nbt::Tag::intArray(std::move(name), std::move(values));
       }
       std::vector<std::int64_t> values;
       readArrayValues(values);
-      return Nbt::longArray(std::move(name), std::move(values));
+      return nbt::Tag::longArray(std::move(name), std::move(values));
     }
 
     template <class T>
@@ -286,12 +290,12 @@ private:
       }
     }
 
-    [[nodiscard]] Nbt::Value readScalar(std::string name, const std::string &token) {
+    [[nodiscard]] nbt::Tag readScalar(std::string name, const std::string &token) {
       if (token == "true") {
-        return Nbt::int8(std::move(name), 1);
+        return nbt::Tag::int8(std::move(name), 1);
       }
       if (token == "false") {
-        return Nbt::int8(std::move(name), 0);
+        return nbt::Tag::int8(std::move(name), 0);
       }
       if (token.empty()) {
         fail("empty SNBT scalar");
@@ -300,26 +304,26 @@ private:
       const auto numeric = suffix == 'b' || suffix == 's' || suffix == 'l' || suffix == 'f' || suffix == 'd' ? std::string_view(token).substr(0, token.size() - 1) : std::string_view(token);
       try {
         if (suffix == 'b') {
-          return Nbt::int8(std::move(name), parseInteger<std::int8_t>(numeric));
+          return nbt::Tag::int8(std::move(name), parseInteger<std::int8_t>(numeric));
         }
         if (suffix == 's') {
-          return Nbt::int16(std::move(name), parseInteger<std::int16_t>(numeric));
+          return nbt::Tag::int16(std::move(name), parseInteger<std::int16_t>(numeric));
         }
         if (suffix == 'l') {
-          return Nbt::int64(std::move(name), parseInteger<std::int64_t>(numeric));
+          return nbt::Tag::int64(std::move(name), parseInteger<std::int64_t>(numeric));
         }
         if (suffix == 'f') {
-          return Nbt::float32(std::move(name), parseFloat<float>(numeric));
+          return nbt::Tag::float32(std::move(name), parseFloat<float>(numeric));
         }
         if (suffix == 'd') {
-          return Nbt::float64(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag::float64(std::move(name), parseFloat<double>(numeric));
         }
         if (token.find_first_of(".eE") != std::string::npos) {
-          return Nbt::float64(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag::float64(std::move(name), parseFloat<double>(numeric));
         }
-        return Nbt::int32(std::move(name), parseInteger<std::int32_t>(numeric));
+        return nbt::Tag::int32(std::move(name), parseInteger<std::int32_t>(numeric));
       } catch (const std::exception &) {
-        return Nbt::string(std::move(name), token);
+        return nbt::Tag::string(std::move(name), token);
       }
     }
 
@@ -344,7 +348,7 @@ private:
     }
 
     std::string_view input_;
-    const Nbt::Options &options_;
+    const nbt::Options &options_;
     std::size_t position_{};
   };
 
@@ -363,7 +367,7 @@ private:
     output.push_back('"');
   }
 
-  static void writeSnbt(std::string &output, const Nbt::Value &value, bool pretty, std::size_t depth, bool includeName) {
+  static void writeSnbt(std::string &output, const nbt::Tag &value, bool pretty, std::size_t depth, bool includeName) {
     if (includeName && !value.name.empty()) {
       appendQuoted(output, value.name);
       output.push_back(':');
@@ -372,39 +376,39 @@ private:
       }
     }
     switch (value.type) {
-    case Nbt::Type::Byte:
+    case nbt::Type::Byte:
       output += std::to_string(std::get<std::int8_t>(value.payload)) + "b";
       break;
-    case Nbt::Type::Short:
+    case nbt::Type::Short:
       output += std::to_string(std::get<std::int16_t>(value.payload)) + "s";
       break;
-    case Nbt::Type::Int:
+    case nbt::Type::Int:
       output += std::to_string(std::get<std::int32_t>(value.payload));
       break;
-    case Nbt::Type::Long:
+    case nbt::Type::Long:
       output += std::to_string(std::get<std::int64_t>(value.payload)) + "L";
       break;
-    case Nbt::Type::Float:
+    case nbt::Type::Float:
       output += std::to_string(std::get<float>(value.payload)) + "f";
       break;
-    case Nbt::Type::Double:
+    case nbt::Type::Double:
       output += std::to_string(std::get<double>(value.payload)) + "d";
       break;
-    case Nbt::Type::String:
+    case nbt::Type::String:
       appendQuoted(output, std::get<std::string>(value.payload));
       break;
-    case Nbt::Type::ByteArray:
+    case nbt::Type::ByteArray:
       writeArray(output, "B", std::get<std::vector<std::int8_t>>(value.payload), "b");
       break;
-    case Nbt::Type::IntArray:
+    case nbt::Type::IntArray:
       writeArray(output, "I", std::get<std::vector<std::int32_t>>(value.payload), "");
       break;
-    case Nbt::Type::LongArray:
+    case nbt::Type::LongArray:
       writeArray(output, "L", std::get<std::vector<std::int64_t>>(value.payload), "L");
       break;
-    case Nbt::Type::List: {
+    case nbt::Type::List: {
       output.push_back('[');
-      const auto &values = std::get<Nbt::Value::List>(value.payload).values;
+      const auto &values = std::get<nbt::Tag::List>(value.payload).values;
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output += pretty ? ", " : ",";
@@ -414,9 +418,9 @@ private:
       output.push_back(']');
       break;
     }
-    case Nbt::Type::Compound: {
+    case nbt::Type::Compound: {
       output.push_back('{');
-      const auto &values = std::get<Nbt::Value::Compound>(value.payload).values;
+      const auto &values = std::get<nbt::Tag::Compound>(value.payload).values;
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output.push_back(',');
@@ -434,7 +438,7 @@ private:
       output.push_back('}');
       break;
     }
-    case Nbt::Type::End:
+    case nbt::Type::End:
       output += "null";
       break;
     }
