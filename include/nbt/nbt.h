@@ -359,6 +359,7 @@ private:
     std::uint32_t subtreeEnd{};
     std::uint32_t childCount{};
     std::uint16_t nameSize{};
+    std::string name;
     Type type{Type::End};
     Type elementType{Type::End};
   };
@@ -474,16 +475,24 @@ public:
     const std::uint32_t index_{};
   };
 
+  NbtParser(const NbtParser &) = delete;
+
+  NbtParser &operator=(const NbtParser &) = delete;
+
   NbtParser() = default;
 
   NbtParser(Tag rootValue) : NbtParser() {
     rootValue_ = std::move(rootValue);
   }
 
-  NbtParser(const NbtParser &) = delete;
-  NbtParser &operator=(const NbtParser &) = delete;
-  NbtParser(NbtParser &&) noexcept = default;
-  NbtParser &operator=(NbtParser &&) noexcept = default;
+  NbtParser(NbtParser &&other) noexcept {
+    this->swap(other);
+  }
+
+  NbtParser &operator=(NbtParser &&other) noexcept {
+    this->swap(other);
+    return *this;
+  }
 
   void swap(NbtParser &nbt) noexcept {
     using std::swap;
@@ -495,28 +504,6 @@ public:
     swap(encodedSize_, nbt.encodedSize_);
     swap(position_, nbt.position_);
     swap(nodes_, nbt.nodes_);
-  }
-
-  void reset(std::span<const std::byte> data) {
-    Options options;
-    reset(data, options);
-  }
-
-  void reset(std::span<const std::byte> data, const Options &options) {
-    NbtParser nbt = NbtParser::parse(data, options);
-    swap(nbt);
-  }
-
-  template <typename Container>
-  void reset(const Container &data) {
-    Options options;
-    reset(data, options);
-  }
-
-  template <typename Container>
-  void reset(const Container &data, const Options &options) {
-    NbtParser nbt = NbtParser::parse(data, options);
-    swap(nbt);
   }
 
   template <typename Container>

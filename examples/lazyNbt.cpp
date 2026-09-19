@@ -11,7 +11,7 @@ int main() {
   if (document.status() != Status::NeedMoreData) {
     return 1;
   }
-  document.reset(std::span(encoded));
+  document = Nbt::parse(encoded);
   if (document.status() != Status::Complete) {
     return 1;
   }

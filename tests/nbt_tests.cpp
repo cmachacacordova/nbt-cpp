@@ -55,7 +55,7 @@ void testContinuation() {
   const std::span<const std::byte> view(bytes);
   N borrowed = N::parse(view.first(bytes.size() / 2));
   check(borrowed.status() == nbt::Status::NeedMoreData);
-  borrowed.reset(view);
+  borrowed = N::parse(view);
   check(borrowed.status() == nbt::Status::Complete);
 
   N append;
