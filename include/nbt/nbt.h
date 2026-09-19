@@ -202,7 +202,7 @@ public:
 
   Buffer(std::size_t capacity) : Buffer() {
     try {
-      const auto grownCapacity = std::max({static_cast<unsigned long long>(64), capacity});
+      const auto grownCapacity = std::max<std::size_t>({static_cast<unsigned long long>(64), capacity});
       data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
       size_ = 0;
       capacity_ = grownCapacity;
