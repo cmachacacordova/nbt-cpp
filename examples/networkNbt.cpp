@@ -1,8 +1,10 @@
+#include <cstdint>
+
 #include "nbt/nbt.h"
 
 int main() {
   using namespace nbt;
-  Nbt source(Tag::compound("", {Tag::int32("answer", 42)}));
+  Nbt source(Tag("", std::vector<Tag>{Tag("answer", std::int32_t(42))}));
   const auto bytes = source.encode(Format::Network);
   Options options;
   options.format = Format::Network;

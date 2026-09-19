@@ -2,7 +2,8 @@
 
 int main() {
   using namespace nbt;
-  const auto bytes = Nbt(Tag::compound("player", {Tag::int32("health", 20), Tag::string("name", "Alex")})).encode();
+  using namespace std::string_literals;
+  const auto bytes = Nbt(Tag("player", std::vector<Tag>{Tag("health", int32_t(20)), Tag("name", "Alex"s)})).encode();
   Nbt document = Nbt::parse(bytes);
   if (document.status() != Status::Complete) {
     return 1;

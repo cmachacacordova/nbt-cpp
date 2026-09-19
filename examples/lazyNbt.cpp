@@ -1,10 +1,12 @@
+#include <cstdint>
 #include <span>
 
 #include "nbt/nbt.h"
 
 int main() {
   using namespace nbt;
-  Nbt source(Tag::compound("root", {Tag::int32("health", 20), Tag::string("name", "Alex")}));
+  using namespace std::string_literals;
+  Nbt source(Tag("root", std::vector<Tag>{Tag("health", std::int32_t(20)), Tag("name", "Alex"s)}));
   const auto encoded = source.encode();
   const auto firstHalf = std::span(encoded).first(encoded.size() / 2);
   Nbt document = Nbt::parse(firstHalf);

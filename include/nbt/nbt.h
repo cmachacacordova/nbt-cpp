@@ -16,9 +16,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -72,105 +74,87 @@ struct Tag {
   using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
   using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
   using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
+  using Container = std::vector<Tag>;  ///<
 
-  struct List {
-    Type elementType{Type::End};
-    std::vector<Tag> values; ///< List elements in serialized order.
-
-    List() = default;
-
-    /**
-     * @brief Constructs a list by taking ownership of existing elements.
-     *
-     * @param value
-     */
-    explicit List(Type elementType, std::vector<Tag> value) : elementType(elementType), values(std::move(value)) {
-    }
-
-    /**
-     * @brief Constructs a list from an initializer list.
-     *
-     * @param init
-     */
-    List(std::initializer_list<Tag> init) : values(init) {
-    }
-  };
-
-  /** @brief Ordered collection of named child tags. */
-  struct Compound {
-    std::vector<Tag> values; ///< Child values in serialized order.
-
-    Compound() = default;
-
-    /**
-     * @brief Constructs a compound by taking ownership of existing children.
-     *
-     * @param value
-     */
-    explicit Compound(std::vector<Tag> value) : values(std::move(value)) {
-    }
-
-    /**
-     * @brief Constructs a compound from an initializer list.
-     *
-     * @param init
-     */
-    Compound(std::initializer_list<Tag> init) : values(init) {
-    }
-  };
-
-  using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, List, Compound, ByteArray, IntArray, LongArray>;
+  using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, Container, ByteArray, IntArray, LongArray>;
 
   Type type{Type::End};
+  Type elementType{Type::End};
   std::string name;
   Payload payload;
 
-  [[nodiscard]] static Tag int8(std::string name, std::int8_t value) {
-    return {.type = Type::Byte, .name = std::move(name), .payload = value};
+  Tag() = default;
+
+  template <typename T>
+  Tag(T value) : Tag("", std::move(value)) {
   }
 
-  [[nodiscard]] static Tag int16(std::string name, std::int16_t value) {
-    return {.type = Type::Short, .name = std::move(name), .payload = value};
+  template <typename T>
+  Tag(std::string name, T value) {
+    this->name = std::move(name);
+    this->payload = std::move(value);
+    if constexpr (std::is_same_v<T, Byte>) {
+      this->type = Type::Byte;
+    } else if constexpr (std::is_same_v<T, Short>) {
+      this->type = Type::Short;
+    } else if constexpr (std::is_same_v<T, Int>) {
+      this->type = Type::Int;
+    } else if constexpr (std::is_same_v<T, Long>) {
+      this->type = Type::Long;
+    } else if constexpr (std::is_same_v<T, float>) {
+      this->type = Type::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+      this->type = Type::Double;
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      this->type = Type::String;
+    }
   }
 
-  [[nodiscard]] static Tag int32(std::string name, std::int32_t value) {
-    return {.type = Type::Int, .name = std::move(name), .payload = value};
+  template <typename T>
+  Tag(std::string name, std::vector<T> values) {
+    static_assert(std::is_constructible_v<Payload, std::vector<T>>, "Type is not constructible from Tag");
+
+    Container container;
+    std::ranges::transform(values, std::back_inserter(container), [](auto &value) {
+      return Tag(value);
+    });
+
+    this->name = std::move(name);
+    this->payload = std::move(container);
+    if constexpr (std::is_same_v<T, Byte>) {
+      this->type = Type::ByteArray;
+      this->elementType = Type::Byte;
+    } else if constexpr (std::is_same_v<T, Short>) {
+      this->type = Type::List;
+      this->elementType = Type::Short;
+    } else if constexpr (std::is_same_v<T, Int>) {
+      this->type = Type::IntArray;
+      this->elementType = Type::Int;
+    } else if constexpr (std::is_same_v<T, Long>) {
+      this->type = Type::LongArray;
+      this->elementType = Type::Long;
+    } else if constexpr (std::is_same_v<T, float>) {
+      this->type = Type::List;
+      this->elementType = Type::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+      this->type = Type::List;
+      this->elementType = Type::Double;
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      this->type = Type::List;
+      this->elementType = Type::String;
+    } else if constexpr (std::is_same_v<T, Tag>) {
+      this->type = Type::Compound;
+    } else {
+      this->type = Type::List;
+      this->elementType = Type::List;
+    }
   }
 
-  [[nodiscard]] static Tag int64(std::string name, std::int64_t value) {
-    return {.type = Type::Long, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Tag float32(std::string name, float value) {
-    return {.type = Type::Float, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Tag float64(std::string name, double value) {
-    return {.type = Type::Double, .name = std::move(name), .payload = value};
-  }
-
-  [[nodiscard]] static Tag string(std::string name, std::string value) {
-    return {.type = Type::String, .name = std::move(name), .payload = std::move(value)};
-  }
-
-  [[nodiscard]] static Tag byteArray(std::string name, std::vector<std::int8_t> values) {
-    return {.type = Type::ByteArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Tag intArray(std::string name, std::vector<std::int32_t> values) {
-    return {.type = Type::IntArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Tag longArray(std::string name, std::vector<std::int64_t> values) {
-    return {.type = Type::LongArray, .name = std::move(name), .payload = std::move(values)};
-  }
-
-  [[nodiscard]] static Tag list(std::string name, Type type, std::vector<Tag> values = {}) {
-    return {.type = Type::List, .name = std::move(name), .payload = Tag::List(type, std::move(values))};
-  }
-
-  [[nodiscard]] static Tag compound(std::string name, std::vector<Tag> values = {}) {
-    return {.type = Type::Compound, .name = std::move(name), .payload = Tag::Compound{std::move(values)}};
+  Tag(std::string name, Type type, std::vector<Tag> value) {
+    this->name = std::move(name);
+    this->payload = std::move(value);
+    this->type = Type::List;
+    this->elementType = type;
   }
 };
 
@@ -884,21 +868,22 @@ private:
       break;
     }
     case Type::List: {
-      Tag::List list(node.elementType, {});
-      list.values.reserve(node.childCount);
+      std::vector<Tag> values;
+      values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
-        list.values.push_back(View(this, nodeIndex).child(index).materialize());
+        values.push_back(View(this, nodeIndex).child(index).materialize());
       }
-      value.payload = std::move(list);
+      value.elementType = node.elementType;
+      value.payload = std::move(values);
       break;
     }
     case Type::Compound: {
-      Tag::Compound compound;
-      compound.values.reserve(node.childCount);
+      std::vector<Tag> values;
+      values.reserve(node.childCount);
       for (std::size_t index = 0; index < node.childCount; ++index) {
-        compound.values.push_back(View(this, nodeIndex).child(index).materialize());
+        values.push_back(View(this, nodeIndex).child(index).materialize());
       }
-      value.payload = std::move(compound);
+      value.payload = std::move(values);
       break;
     }
     case Type::End:
@@ -1006,10 +991,10 @@ private:
       break;
     }
     case Type::List: {
-      const auto &listValue = std::get<Tag::List>(value.payload);
+      const auto &listValue = std::get<Tag::Container>(value.payload);
       size += 5;
-      for (const auto &element : listValue.values) {
-        if (element.type != listValue.elementType || !element.name.empty()) {
+      for (const auto &element : listValue) {
+        if (element.type != value.elementType || !element.name.empty()) {
           throw std::invalid_argument("invalid TAG_List element");
         }
         size += payloadSize(element);
@@ -1017,7 +1002,7 @@ private:
       break;
     }
     case Type::Compound:
-      for (const auto &child : std::get<Tag::Compound>(value.payload).values) {
+      for (const auto &child : std::get<Tag::Container>(value.payload)) {
         size += namedSize(child);
       }
       size++;
@@ -1075,11 +1060,11 @@ private:
       break;
     }
     case Type::List: {
-      const auto &listValue = std::get<Tag::List>(value.payload);
-      appendNumber(output, static_cast<std::uint8_t>(listValue.elementType));
-      appendLength(output, listValue.values.size());
-      for (const auto &element : listValue.values) {
-        if (element.type != listValue.elementType || !element.name.empty()) {
+      const auto &listValue = std::get<Tag::Container>(value.payload);
+      appendNumber(output, static_cast<std::uint8_t>(value.elementType));
+      appendLength(output, listValue.size());
+      for (const auto &element : listValue) {
+        if (element.type != value.elementType || !element.name.empty()) {
           throw std::invalid_argument("invalid TAG_List element");
         }
         appendPayload(output, element);
@@ -1087,7 +1072,7 @@ private:
       break;
     }
     case Type::Compound:
-      for (const auto &child : std::get<Tag::Compound>(value.payload).values) {
+      for (const auto &child : std::get<Tag::Container>(value.payload)) {
         appendNamed(output, child);
       }
       output.push_back(std::byte{});

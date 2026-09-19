@@ -1,6 +1,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <stdexcept>
@@ -20,8 +21,10 @@ void check(bool condition) {
 }
 
 nbt::Tag sample() {
-  return nbt::Tag::compound(
-      "root", {nbt::Tag::int32("answer", 42), nbt::Tag::string("name", "Alex"), nbt::Tag::list("values", nbt::Type::Int, {nbt::Tag::int32("", 1), nbt::Tag::int32("", 2)}), nbt::Tag::compound("nested", {nbt::Tag::float64("value", 1.5)})});
+  using namespace std::string_literals;
+  return nbt::Tag("root",
+                  std::vector<nbt::Tag>{
+                      nbt::Tag("answer", int32_t(42)), nbt::Tag("name", "Alex"s), nbt::Tag("values", nbt::Type::Int, {nbt::Tag("", int32_t(1)), nbt::Tag("", int32_t(2))}), nbt::Tag("nested", std::vector<nbt::Tag>{nbt::Tag("value", float(1.5))})});
 }
 
 void testBorrowedLazyRead() {

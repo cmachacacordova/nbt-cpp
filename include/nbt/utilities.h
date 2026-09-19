@@ -110,7 +110,7 @@ private:
         return readList(std::move(name), depth);
       }
       if (peek() == '"' || peek() == '\'') {
-        return nbt::Tag::string(std::move(name), readQuoted());
+        return nbt::Tag(std::move(name), readQuoted());
       }
       return readScalar(std::move(name), readBare());
     }
@@ -202,7 +202,7 @@ private:
       std::vector<nbt::Tag> values;
       skipWhitespace();
       if (consume('}')) {
-        return nbt::Tag::compound(std::move(name), {});
+        return nbt::Tag(std::move(name), std::vector<Tag>{});
       }
       while (true) {
         if (values.size() >= options_.maxContainerElements) {
@@ -216,7 +216,7 @@ private:
         }
         expect(',');
       }
-      return nbt::Tag::compound(std::move(name), std::move(values));
+      return nbt::Tag(std::move(name), std::move(values));
     }
 
     [[nodiscard]] nbt::Tag readList(std::string name, std::size_t depth) {
@@ -227,7 +227,7 @@ private:
       }
       std::vector<nbt::Tag> values;
       if (consume(']')) {
-        return nbt::Tag::list(std::move(name), nbt::Type::End, {});
+        return nbt::Tag(std::move(name), nbt::Type::End, {});
       }
       auto first = readValue({}, depth + 1);
       const auto elementType = first.type;
@@ -243,7 +243,7 @@ private:
           fail("SNBT element limit exceeded");
         }
       }
-      return nbt::Tag::list(std::move(name), elementType, std::move(values));
+      return nbt::Tag(std::move(name), elementType, std::move(values));
     }
 
     [[nodiscard]] nbt::Tag readTypedArray(std::string name) {
@@ -252,16 +252,16 @@ private:
       if (kind == 'B') {
         std::vector<std::int8_t> values;
         readArrayValues(values);
-        return nbt::Tag::byteArray(std::move(name), std::move(values));
+        return nbt::Tag(std::move(name), std::move(values));
       }
       if (kind == 'I') {
         std::vector<std::int32_t> values;
         readArrayValues(values);
-        return nbt::Tag::intArray(std::move(name), std::move(values));
+        return nbt::Tag(std::move(name), std::move(values));
       }
       std::vector<std::int64_t> values;
       readArrayValues(values);
-      return nbt::Tag::longArray(std::move(name), std::move(values));
+      return nbt::Tag(std::move(name), std::move(values));
     }
 
     template <class T>
@@ -292,10 +292,10 @@ private:
 
     [[nodiscard]] nbt::Tag readScalar(std::string name, const std::string &token) {
       if (token == "true") {
-        return nbt::Tag::int8(std::move(name), 1);
+        return nbt::Tag(std::move(name), 1);
       }
       if (token == "false") {
-        return nbt::Tag::int8(std::move(name), 0);
+        return nbt::Tag(std::move(name), 0);
       }
       if (token.empty()) {
         fail("empty SNBT scalar");
@@ -304,26 +304,26 @@ private:
       const auto numeric = suffix == 'b' || suffix == 's' || suffix == 'l' || suffix == 'f' || suffix == 'd' ? std::string_view(token).substr(0, token.size() - 1) : std::string_view(token);
       try {
         if (suffix == 'b') {
-          return nbt::Tag::int8(std::move(name), parseInteger<std::int8_t>(numeric));
+          return nbt::Tag(std::move(name), parseInteger<std::int8_t>(numeric));
         }
         if (suffix == 's') {
-          return nbt::Tag::int16(std::move(name), parseInteger<std::int16_t>(numeric));
+          return nbt::Tag(std::move(name), parseInteger<std::int16_t>(numeric));
         }
         if (suffix == 'l') {
-          return nbt::Tag::int64(std::move(name), parseInteger<std::int64_t>(numeric));
+          return nbt::Tag(std::move(name), parseInteger<std::int64_t>(numeric));
         }
         if (suffix == 'f') {
-          return nbt::Tag::float32(std::move(name), parseFloat<float>(numeric));
+          return nbt::Tag(std::move(name), parseFloat<float>(numeric));
         }
         if (suffix == 'd') {
-          return nbt::Tag::float64(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag(std::move(name), parseFloat<double>(numeric));
         }
         if (token.find_first_of(".eE") != std::string::npos) {
-          return nbt::Tag::float64(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag(std::move(name), parseFloat<double>(numeric));
         }
-        return nbt::Tag::int32(std::move(name), parseInteger<std::int32_t>(numeric));
+        return nbt::Tag(std::move(name), parseInteger<std::int32_t>(numeric));
       } catch (const std::exception &) {
-        return nbt::Tag::string(std::move(name), token);
+        return nbt::Tag(std::move(name), token);
       }
     }
 
@@ -408,7 +408,7 @@ private:
       break;
     case nbt::Type::List: {
       output.push_back('[');
-      const auto &values = std::get<nbt::Tag::List>(value.payload).values;
+      const auto &values = std::get<nbt::Tag::Container>(value.payload);
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output += pretty ? ", " : ",";
@@ -420,7 +420,7 @@ private:
     }
     case nbt::Type::Compound: {
       output.push_back('{');
-      const auto &values = std::get<nbt::Tag::Compound>(value.payload).values;
+      const auto &values = std::get<nbt::Tag::Container>(value.payload);
       for (std::size_t index = 0; index < values.size(); ++index) {
         if (index) {
           output.push_back(',');
