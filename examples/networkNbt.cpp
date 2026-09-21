@@ -3,7 +3,7 @@
 int main() {
   using namespace nbt;
   using namespace nbt::tag_literals;
-  Nbt source(Tag("", std::vector<Tag>{Tag("answer"_ts, 42_ti)}));
+  Nbt source(Tag("", std::vector<Tag>{Tag("answer", 42_ti)}));
   const auto bytes = source.encode(Source::Network);
   Options options;
   options.format = Source::Network;
