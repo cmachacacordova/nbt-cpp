@@ -88,12 +88,12 @@ struct Tag {
   Tag(T value) : Tag("", std::move(value)) {
   }
 
-  template <typename T>
-  Tag(std::string name, T value) {
+  template <typename Name, typename T>
+    requires std::is_constructible_v<std::string, Name &&>
+  Tag(Name &&name, T value) : name{std::forward<Name>(name)} {
     using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
     static_assert(disjunction::value, "Type is not constructible from Tag");
 
-    this->name = std::move(name);
     if constexpr (std::is_same_v<T, Byte>) {
       this->payload = std::move(value);
       this->type = Type::Byte;
@@ -122,23 +122,16 @@ struct Tag {
     }
   }
 
-  // template <typename T>
-  // Tag(std::initializer_list<T> elements) : Tag("", std::vector<T>(elements)) {
-  // }
-
-  // template <typename T>
-  // Tag(std::string name, std::initializer_list<T> elements) : Tag(std::move(name), std::vector<T>(elements)) {
-  // }
-
   template <typename T>
   Tag(std::vector<T> elements) : Tag("", std::move(elements)) {
   }
 
-  template <typename T>
-  Tag(std::string name, std::vector<T> elements) {
+  template <typename Name, typename T>
+    requires std::is_constructible_v<std::string, Name &&>
+  Tag(Name &&name, std::vector<T> elements) {
     using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
     static_assert(disjunction::value, "Type is not constructible from Tag");
-    this->name = std::move(name);
+    this->name = std::string{std::forward<Name>(name)};
     if constexpr (std::is_same_v<T, Byte> || std::is_same_v<T, Int> || std::is_same_v<T, Long> || std::is_same_v<T, Tag>) {
       this->payload = std::move(elements);
     } else {
@@ -173,53 +166,6 @@ struct Tag {
       this->elementType = Type::List;
     }
   }
-
-  // template <typename T>
-  // Tag(std::span<T> elements) : Tag("", std::move<T>(elements)) {
-  // }
-
-  // template <typename T>
-  // Tag(std::string name, std::span<T> elements) {
-  //   using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
-  //   static_assert(disjunction::value, "Type is not constructible from Tag");
-  //   this->name = std::move(name);
-  //   if constexpr (std::is_same_v<T, Byte> || std::is_same_v<T, Int> || std::is_same_v<T, Long> || std::is_same_v<T, Tag>) {
-  //     this->payload = std::vector<T>(elements);
-  //   } else {
-  //     Tag::Container values;
-  //     std::ranges::transform(elements, std::back_inserter(values), [](auto &value) {
-  //       return Tag(value);
-  //     });
-  //     this->payload = std::move(values);
-  //   }
-  //   if constexpr (std::is_same_v<T, Byte>) {
-  //     this->type = Type::ByteArray;
-  //     this->elementType = Type::Byte;
-  //   } else if constexpr (std::is_same_v<T, Short>) {
-  //     this->type = Type::List;
-  //     this->elementType = Type::Short;
-  //   } else if constexpr (std::is_same_v<T, Int>) {
-  //     this->type = Type::IntArray;
-  //     this->elementType = Type::Int;
-  //   } else if constexpr (std::is_same_v<T, Long>) {
-  //     this->type = Type::LongArray;
-  //     this->elementType = Type::Long;
-  //   } else if constexpr (std::is_same_v<T, Float>) {
-  //     this->type = Type::List;
-  //     this->elementType = Type::Float;
-  //   } else if constexpr (std::is_same_v<T, Double>) {
-  //     this->type = Type::List;
-  //     this->elementType = Type::Double;
-  //   } else if constexpr (std::is_same_v<T, String>) {
-  //     this->type = Type::List;
-  //     this->elementType = Type::String;
-  //   } else if constexpr (std::is_same_v<T, Tag>) {
-  //     this->type = Type::Compound;
-  //   } else {
-  //     this->type = Type::List;
-  //     this->elementType = Type::List;
-  //   }
-  // }
 
   Tag(std::string name, Type type, std::vector<Tag> value) {
     this->name = std::move(name);
@@ -1293,14 +1239,24 @@ namespace tag_literals {
   return Tag::Double(value);
 }
 
-[[nodiscard]] constexpr Tag &operator|(const std::string &name, Tag &value) noexcept {
-  value.name = name;
+template <typename String>
+  requires std::is_constructible_v<std::string, String &&>
+[[nodiscard]] constexpr Tag &operator|(String &&name, Tag &value) {
+  value.name = std::string{std::forward<String>(name)};
   return value;
 }
 
-[[nodiscard]] constexpr Tag operator|(std::string &&name, Tag &&value) noexcept {
-  value.name = std::move(name);
+template <typename String>
+  requires std::is_constructible_v<std::string, String &&>
+[[nodiscard]] constexpr Tag operator|(String &&name, Tag &&value) {
+  value.name = std::string{std::forward<String>(name)};
   return value;
+}
+
+template <typename String, typename Value>
+  requires(std::is_constructible_v<std::string, String &&> && std::is_convertible_v<Value &&, Tag> && !std::is_same_v<std::remove_cvref_t<Value>, Tag>)
+[[nodiscard]] constexpr Tag operator|(String &&name, Value &&value) {
+  return Tag(std::forward<String>(name), std::forward<Value>(value));
 }
 
 } // namespace tag_literals

@@ -1,96 +1,29 @@
 # nbt-cpp
 
-A high-performance C++23 header-only codec for Java Edition NBT. It validates structure eagerly and reads values lazily.
+`nbt-cpp` is a C++23 header-only codec for Java Edition NBT. The binary codec validates and indexes the complete structure when input is opened, while names, scalar values, strings and arrays are decoded on demand through lightweight views.
+
+## Requirements
+
+- C++23 compiler.
+- No required third-party dependency for the binary codec.
+- ZLIB is required only when building the optional utilities target.
 
 ## Integration
+
+The installed package exports the core `nbt::nbt` interface target:
 
 ```cmake
 find_package(nbt-cpp CONFIG REQUIRED)
 target_link_libraries(application PRIVATE nbt::nbt)
 ```
 
+Include the binary codec with:
+
 ```cpp
 #include <nbt/nbt.h>
 ```
 
-## Borrowed input
-
-```cpp
-nbt::Nbt document;
-auto status = document.borrow(packetBytes);
-if (status == nbt::Nbt::Status::Complete) {
-  auto health = document.root().find("health").asInt32();
-}
-```
-
-The caller must keep borrowed bytes alive while the document or any view is used.
-
-## Owned input
-
-```cpp
-auto bytes = std::make_unique<std::byte[]>(size);
-nbt::Nbt document;
-document.take(std::move(bytes), size);
-```
-
-## Incremental input
-
-Replace a borrowed view when the same underlying message grows:
-
-```cpp
-document.borrow(partial);
-document.replaceBorrowed(completeMessage);
-```
-
-Accumulate independent network fragments:
-
-```cpp
-document.feed(firstChunk);
-document.feed(secondChunk);
-```
-
-Truncation returns `Nbt::Status::NeedMoreData`. Malformed input throws `nbt::Error`.
-
-## Lazy access
-
-```cpp
-auto root = document.root();
-auto player = root.find("player");
-auto health = player.find("health").asInt32();
-```
-
-Views contain a document reference and node index. Names, strings and scalar values are decoded only when requested. `materialize()` explicitly creates an owning value tree.
-
-## Encoding
-
-```cpp
-auto root = nbt::Nbt::compound("root", {
-    nbt::Nbt::int32("health", 20),
-    nbt::Nbt::string("name", "Alex")
-});
-
-auto bytes = nbt::Nbt::encode(root);
-```
-
-An unchanged lazy document can reproduce its validated encoded range without materializing values:
-
-```cpp
-auto copy = document.encode();
-```
-
-## Formats
-
-```cpp
-nbt::Nbt::Options options;
-options.format = nbt::Nbt::Format::Network;
-document.borrow(packet, options);
-```
-
-`Format::File` uses a named root. `Format::Network` requires an unnamed compound root.
-
-## Optional utilities
-
-SNBT, filesystem access, gzip and zlib live in a separate header and CMake target:
+When utilities are enabled, link the optional target as well:
 
 ```cmake
 target_link_libraries(application PRIVATE nbt::utilities)
@@ -98,13 +31,156 @@ target_link_libraries(application PRIVATE nbt::utilities)
 
 ```cpp
 #include <nbt/utilities.h>
-
-auto value = nbt::NbtUtilities::parseSnbt("{health:20}");
-auto text = nbt::NbtUtilities::toSnbt(value, true);
-
-auto document = nbt::NbtUtilities::load("level.dat");
-nbt::NbtUtilities::save("copy.dat", document,
-                        nbt::NbtUtilities::Compression::Gzip);
 ```
 
-The core `nbt::nbt` target remains independent from zlib.
+CMake options:
+
+- `NBT_CPP_BUILD_TESTS` (default `ON`)
+- `NBT_CPP_BUILD_EXAMPLES` (default `ON`)
+- `NBT_CPP_BUILD_UTILITIES` (default `ON`, requires ZLIB)
+
+## Parsing input
+
+The public `nbt::Nbt` type is an alias for `nbt::NbtParser<nbt::Buffer>`.
+
+### Borrowed, zero-copy input
+
+Parsing a `std::span<const std::byte>` refers to the caller-owned bytes without copying them:
+
+```cpp
+std::span<const std::byte> packetBytes = /* complete NBT message */;
+nbt::Nbt document = nbt::Nbt::parse(packetBytes);
+
+if (document.status() == nbt::Status::Complete) {
+  const auto health = document.root().find("health").as<nbt::Type::Int>();
+}
+```
+
+The source bytes must remain alive and unchanged while the document or any view is used. `document.ownsBytes()` is `false` for this input mode.
+
+### Owned input
+
+Parsing a contiguous container copies its bytes into the parser's internal `nbt::Buffer`:
+
+```cpp
+std::vector<std::byte> bytes = /* NBT message */;
+nbt::Nbt document = nbt::Nbt::parse(bytes);
+```
+
+The document owns the copied bytes, so the source container may be released after parsing. `document.ownsBytes()` reports whether the parser has an internal buffer.
+
+### Incremental input
+
+Use `append` to accumulate independent fragments. Each call copies the fragment and validates the accumulated bytes:
+
+```cpp
+nbt::Nbt document;
+document.append(firstChunk);
+if (document.status() == nbt::Status::NeedMoreData) {
+  document.append(secondChunk);
+}
+
+if (document.complete()) {
+  const auto root = document.root();
+}
+```
+
+An empty parser has `Status::Empty`. Truncated input has `Status::NeedMoreData`; malformed input throws `nbt::Error`, whose `offset()` identifies the byte position when available. `clear()` resets the document to `Status::Empty`.
+
+## File and network formats
+
+File NBT is the default and contains one named root tag. Network NBT contains an unnamed `TAG_Compound` root. Select the network format through `nbt::Options` when parsing:
+
+```cpp
+nbt::Options options;
+options.format = nbt::Source::Network;
+nbt::Nbt document = nbt::Nbt::parse(packetBytes, options);
+```
+
+The same format can be selected when encoding:
+
+```cpp
+auto networkBytes = document.encode(nbt::Source::Network);
+```
+
+The parser also applies configurable safety limits through `Options`: maximum depth, container elements, total nodes and input bytes. `requireCompleteInput` rejects trailing bytes when enabled (the default).
+
+## Lazy views and materialization
+
+`document.root()` returns an `nbt::Nbt::View`. A view is valid only while its originating document remains alive, unmoved and attached to the same input.
+
+```cpp
+auto root = document.root();
+auto player = root.find("player");
+auto health = player.find("health").as<nbt::Type::Int>();
+```
+
+`View` supports:
+
+- `type()`, `elementType()` and `name()` metadata access.
+- `as<Type>()` for scalar values, strings, byte arrays, integer-array views and container views.
+- `size()`, `empty()`, `operator[]`, `child(index)`, `find(name)` and range iteration for lists and compounds.
+- `materialize()` to create an owning `nbt::Tag` subtree.
+
+Integer arrays are exposed as lazy `IntArrayView` and `LongArrayView` values. Byte arrays are exposed as `std::span<const std::byte>`. Call `document.materialize()` to create an owning tree for the complete document.
+
+## Encoding
+
+`nbt::Tag` is the owning representation. It supports NBT scalar values, strings, lists, compounds and byte/int/long arrays:
+
+```cpp
+using namespace nbt::tag_literals;
+using namespace std::string_literals;
+
+nbt::Tag root("root", nbt::Tag::Container{
+    "health"s | 20_ti,
+    "name"s | "Alex"s});
+
+nbt::Nbt document(root);
+nbt::Buffer bytes = document.encode();
+```
+
+An unchanged parsed document can be copied to a new buffer without materializing its values. Encoding into an existing buffer is also supported:
+
+```cpp
+nbt::Buffer output;
+document.encode(output);
+```
+
+`document.bytes()` returns a span over the parser's current internal or borrowed bytes. `encode()` and `encode(output)` can re-encode a different `Source` format, materializing the tree when necessary.
+
+## Optional utilities
+
+`nbt::NbtUtilities` provides SNBT conversion, filesystem I/O and ZLIB compression helpers:
+
+```cpp
+using Utilities = nbt::NbtUtilities;
+
+auto value = Utilities::parseSnbt("{health:20}");
+auto text = Utilities::toSnbt(value, true);
+
+auto document = Utilities::load("level.dat");
+Utilities::save("copy.dat", document, Utilities::Compression::Gzip);
+```
+
+Supported compression modes are `None`, `Gzip`, `Zlib` and `Auto`. `Auto` detects gzip or zlib input when loading and is invalid for output. The utilities header requires ZLIB.
+
+## Examples and tests
+
+Configure with CMake, then build and run the tests:
+
+```sh
+cmake -S . -B build -DNBT_CPP_BUILD_UTILITIES=ON
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+CTest runs the core codec suite and, when utilities are enabled, a separate utilities suite. The programs under `examples/` are usage demonstrations and are built by CMake, but are not registered as tests. They cover lazy parsing, fragmented buffers, owning-tree construction, network NBT, view queries, gzip loading and SNBT.
+
+The current test sources are organized as follows:
+
+- `tests/nbt_tests.cpp`: core construction, parsing, views, encoding, file/network formats and malformed-input tests.
+- `tests/utilities_tests.cpp`: SNBT and filesystem/compression round-trip tests.
+- `examples/`: standalone usage programs that are intentionally independent from CTest.
+
+The testing policy, Java-versus-Bedrock compatibility boundary, canonical value matrix and roadmap are documented in [`docs/TESTING.md`](docs/TESTING.md).
