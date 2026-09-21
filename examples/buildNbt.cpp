@@ -5,8 +5,8 @@ int main() {
   using Nbt = nbt::Nbt;
   using namespace nbt::tag_literals;
 
-  NBTTag tag = "name" | "Alex"_s;
+  NBTTag tag = "name" | "Alex"_ts;
 
-  Nbt document(NBTTag("root", std::vector<NBTTag>{"answer"_s | 42_i, tag}));
+  Nbt document(NBTTag("root", std::vector<NBTTag>{"answer"_ts | 42_ti, tag}));
   return document.encode().empty() ? 1 : 0;
 }

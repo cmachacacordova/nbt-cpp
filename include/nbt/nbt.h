@@ -1237,32 +1237,68 @@ private:
 
 namespace tag_literals {
 
-[[nodiscard]] constexpr Tag::String operator""_s(const char *str, size_t len) {
+[[nodiscard]] constexpr Tag operator""_tgs(const char *str, size_t len) {
   return Tag::String(str, len);
 }
 
-[[nodiscard]] constexpr Tag::Byte operator""_b(std::uint64_t value) {
+[[nodiscard]] constexpr Tag operator""_tgb(unsigned long long value) noexcept {
   return Tag::Byte(value);
 }
 
-[[nodiscard]] constexpr Tag::Short operator""_s(std::uint64_t value) {
+[[nodiscard]] constexpr Tag operator""_tgs(unsigned long long value) noexcept {
   return Tag::Short(value);
 }
 
-[[nodiscard]] constexpr Tag::Int operator""_i(std::uint64_t value) {
+[[nodiscard]] constexpr Tag operator""_tgi(unsigned long long value) noexcept {
   return Tag::Int(value);
 }
 
-[[nodiscard]] constexpr Tag::Long operator""_l(std::uint64_t value) {
+[[nodiscard]] constexpr Tag operator""_tgl(unsigned long long value) noexcept {
   return Tag::Long(value);
 }
 
-Tag &operator|(const std::string &name, Tag &value) {
+[[nodiscard]] constexpr Tag operator""_tgf(long double value) noexcept {
+  return Tag::Float(value);
+}
+
+[[nodiscard]] constexpr Tag operator""_tgd(long double value) noexcept {
+  return Tag::Double(value);
+}
+
+[[nodiscard]] constexpr Tag::String operator""_ts(const char *str, size_t len) {
+  return Tag::String(str, len);
+}
+
+[[nodiscard]] constexpr Tag::Byte operator""_tb(unsigned long long value) noexcept {
+  return Tag::Byte(value);
+}
+
+[[nodiscard]] constexpr Tag::Short operator""_ts(unsigned long long value) noexcept {
+  return Tag::Short(value);
+}
+
+[[nodiscard]] constexpr Tag::Int operator""_ti(unsigned long long value) noexcept {
+  return Tag::Int(value);
+}
+
+[[nodiscard]] constexpr Tag::Long operator""_tl(unsigned long long value) noexcept {
+  return Tag::Long(value);
+}
+
+[[nodiscard]] constexpr Tag::Float operator""_tf(long double value) noexcept {
+  return Tag::Float(value);
+}
+
+[[nodiscard]] constexpr Tag::Double operator""_td(long double value) noexcept {
+  return Tag::Double(value);
+}
+
+[[nodiscard]] constexpr Tag &operator|(const std::string &name, Tag &value) noexcept {
   value.name = name;
   return value;
 }
 
-Tag operator|(std::string &&name, Tag &&value) {
+[[nodiscard]] constexpr Tag operator|(std::string &&name, Tag &&value) noexcept {
   value.name = std::move(name);
   return value;
 }

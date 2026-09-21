@@ -5,7 +5,7 @@
 int main() {
   using namespace nbt;
   using namespace nbt::tag_literals;
-  Nbt source(Tag("root", std::vector<Tag>{Tag("health", 20_i), Tag("name", "Alex"_s)}));
+  Nbt source(Tag("root", std::vector<Tag>{Tag("health", 20_ti), Tag("name", "Alex"_ts)}));
   const auto encoded = source.encode();
   const auto firstHalf = std::span(encoded).first(encoded.size() / 2);
   Nbt document = Nbt::parse(firstHalf);

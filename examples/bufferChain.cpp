@@ -5,7 +5,7 @@
 int main() {
   using namespace nbt;
   using namespace nbt::tag_literals;
-  const auto bytes = Nbt(Tag("root"_s, Tag::Container{Tag("answer"_s, 42_i)})).encode();
+  const auto bytes = Nbt(Tag("root"_ts, Tag::Container{Tag("answer"_ts, 42_ti)})).encode();
   Nbt document;
   const auto split = bytes.size() / 2;
   if (document.append(std::span(bytes).first(split)); document.status() != Status::NeedMoreData) {

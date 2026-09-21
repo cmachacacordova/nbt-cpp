@@ -3,7 +3,7 @@
 int main() {
   using namespace nbt;
   using namespace nbt::tag_literals;
-  const auto bytes = Nbt(Tag("player", std::vector<Tag>{Tag("health", 20_i), Tag("name", "Alex"_s)})).encode();
+  const auto bytes = Nbt(Tag("player", std::vector<Tag>{Tag("health", 20_ti), Tag("name", "Alex"_ts)})).encode();
   Nbt document = Nbt::parse(bytes);
   if (document.status() != Status::Complete) {
     return 1;
