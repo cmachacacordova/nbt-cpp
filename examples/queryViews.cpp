@@ -2,8 +2,8 @@
 
 int main() {
   using namespace nbt;
-  using namespace std::string_literals;
-  const auto bytes = Nbt(Tag("player", std::vector<Tag>{Tag("health", int32_t(20)), Tag("name", "Alex"s)})).encode();
+  using namespace nbt::tag_literals;
+  const auto bytes = Nbt(Tag("player", std::vector<Tag>{Tag("health", 20_i), Tag("name", "Alex"_s)})).encode();
   Nbt document = Nbt::parse(bytes);
   if (document.status() != Status::Complete) {
     return 1;
@@ -12,5 +12,5 @@ int main() {
   if (!health || health.as<Type::Int>() != 20) {
     return 1;
   }
-  return health.begin() < health.end() ? 0 : 1;
+  return health.payloadBegin() < health.payloadEnd() ? 0 : 1;
 }

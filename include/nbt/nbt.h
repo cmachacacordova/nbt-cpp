@@ -18,9 +18,8 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
-#include <memory>
+#include <new>
 #include <optional>
-#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -29,6 +28,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "nbt/buffer.h"
 
 namespace nbt {
 
@@ -45,11 +46,9 @@ private:
   std::size_t offset_;
 };
 
-enum class BufferType : std::uint8_t { Raw, View };
-
 enum class Type : std::uint8_t { End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray };
 
-enum class Format : std::uint8_t { File, Network };
+enum class Source : std::uint8_t { File, Network };
 
 enum class Status : std::uint8_t { Empty, Complete, NeedMoreData, Error };
 
@@ -59,7 +58,7 @@ struct Options {
   std::size_t maxTotalNodes{static_cast<std::size_t>(64U * 1024U * 1024U)};
   std::size_t maxInputBytes{static_cast<std::size_t>(1024U * 1024U * 1024U)};
   bool requireCompleteInput{true};
-  Format format{Format::File};
+  Source format{Source::File};
 };
 
 struct Tag {
@@ -74,7 +73,7 @@ struct Tag {
   using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
   using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
   using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
-  using Container = std::vector<Tag>;  ///<
+  using Container = std::vector<Tag>;  ///< Owning TAG_List or TAG_Compound payload.
 
   using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, Container, ByteArray, IntArray, LongArray>;
 
@@ -91,55 +90,80 @@ struct Tag {
 
   template <typename T>
   Tag(std::string name, T value) {
+    using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
+    static_assert(disjunction::value, "Type is not constructible from Tag");
+
     this->name = std::move(name);
-    this->payload = std::move(value);
     if constexpr (std::is_same_v<T, Byte>) {
+      this->payload = std::move(value);
       this->type = Type::Byte;
     } else if constexpr (std::is_same_v<T, Short>) {
+      this->payload = std::move(value);
       this->type = Type::Short;
     } else if constexpr (std::is_same_v<T, Int>) {
+      this->payload = std::move(value);
       this->type = Type::Int;
     } else if constexpr (std::is_same_v<T, Long>) {
+      this->payload = std::move(value);
       this->type = Type::Long;
-    } else if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, Float>) {
+      this->payload = std::move(value);
       this->type = Type::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
+    } else if constexpr (std::is_same_v<T, Double>) {
+      this->payload = std::move(value);
       this->type = Type::Double;
-    } else if constexpr (std::is_same_v<T, std::string>) {
+    } else if constexpr (std::is_same_v<T, String>) {
+      this->payload = std::move(value);
       this->type = Type::String;
+    } else if constexpr (std::is_same_v<T, Tag>) {
+      this->payload = value.payload;
+      this->type = value.type;
+      this->elementType = value.elementType;
     }
   }
 
+  // template <typename T>
+  // Tag(std::initializer_list<T> elements) : Tag("", std::vector<T>(elements)) {
+  // }
+
+  // template <typename T>
+  // Tag(std::string name, std::initializer_list<T> elements) : Tag(std::move(name), std::vector<T>(elements)) {
+  // }
+
   template <typename T>
-  Tag(std::string name, std::vector<T> values) {
-    static_assert(std::is_constructible_v<Payload, std::vector<T>>, "Type is not constructible from Tag");
+  Tag(std::vector<T> elements) : Tag("", std::move(elements)) {
+  }
 
-    Container container;
-    std::ranges::transform(values, std::back_inserter(container), [](auto &value) {
-      return Tag(value);
-    });
-
+  template <typename T>
+  Tag(std::string name, std::vector<T> elements) {
+    using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
+    static_assert(disjunction::value, "Type is not constructible from Tag");
     this->name = std::move(name);
-    this->payload = std::move(container);
+    if constexpr (std::is_same_v<T, Byte> || std::is_same_v<T, Int> || std::is_same_v<T, Long> || std::is_same_v<T, Tag>) {
+      this->payload = std::move(elements);
+    } else {
+      Tag::Container container;
+      std::ranges::transform(elements, std::back_inserter(container), [](auto &value) {
+        return Tag(value);
+      });
+      this->payload = std::move(container);
+    }
     if constexpr (std::is_same_v<T, Byte>) {
       this->type = Type::ByteArray;
-      this->elementType = Type::Byte;
     } else if constexpr (std::is_same_v<T, Short>) {
       this->type = Type::List;
       this->elementType = Type::Short;
     } else if constexpr (std::is_same_v<T, Int>) {
       this->type = Type::IntArray;
-      this->elementType = Type::Int;
     } else if constexpr (std::is_same_v<T, Long>) {
       this->type = Type::LongArray;
-      this->elementType = Type::Long;
-    } else if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, Float>) {
       this->type = Type::List;
       this->elementType = Type::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
+    } else if constexpr (std::is_same_v<T, Double>) {
       this->type = Type::List;
       this->elementType = Type::Double;
-    } else if constexpr (std::is_same_v<T, std::string>) {
+    } else if constexpr (std::is_same_v<T, String>) {
       this->type = Type::List;
       this->elementType = Type::String;
     } else if constexpr (std::is_same_v<T, Tag>) {
@@ -150,125 +174,58 @@ struct Tag {
     }
   }
 
+  // template <typename T>
+  // Tag(std::span<T> elements) : Tag("", std::move<T>(elements)) {
+  // }
+
+  // template <typename T>
+  // Tag(std::string name, std::span<T> elements) {
+  //   using disjunction = std::disjunction<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
+  //   static_assert(disjunction::value, "Type is not constructible from Tag");
+  //   this->name = std::move(name);
+  //   if constexpr (std::is_same_v<T, Byte> || std::is_same_v<T, Int> || std::is_same_v<T, Long> || std::is_same_v<T, Tag>) {
+  //     this->payload = std::vector<T>(elements);
+  //   } else {
+  //     Tag::Container values;
+  //     std::ranges::transform(elements, std::back_inserter(values), [](auto &value) {
+  //       return Tag(value);
+  //     });
+  //     this->payload = std::move(values);
+  //   }
+  //   if constexpr (std::is_same_v<T, Byte>) {
+  //     this->type = Type::ByteArray;
+  //     this->elementType = Type::Byte;
+  //   } else if constexpr (std::is_same_v<T, Short>) {
+  //     this->type = Type::List;
+  //     this->elementType = Type::Short;
+  //   } else if constexpr (std::is_same_v<T, Int>) {
+  //     this->type = Type::IntArray;
+  //     this->elementType = Type::Int;
+  //   } else if constexpr (std::is_same_v<T, Long>) {
+  //     this->type = Type::LongArray;
+  //     this->elementType = Type::Long;
+  //   } else if constexpr (std::is_same_v<T, Float>) {
+  //     this->type = Type::List;
+  //     this->elementType = Type::Float;
+  //   } else if constexpr (std::is_same_v<T, Double>) {
+  //     this->type = Type::List;
+  //     this->elementType = Type::Double;
+  //   } else if constexpr (std::is_same_v<T, String>) {
+  //     this->type = Type::List;
+  //     this->elementType = Type::String;
+  //   } else if constexpr (std::is_same_v<T, Tag>) {
+  //     this->type = Type::Compound;
+  //   } else {
+  //     this->type = Type::List;
+  //     this->elementType = Type::List;
+  //   }
+  // }
+
   Tag(std::string name, Type type, std::vector<Tag> value) {
     this->name = std::move(name);
     this->payload = std::move(value);
     this->type = Type::List;
     this->elementType = type;
-  }
-};
-
-class Buffer {
-private:
-  inline static std::allocator<std::byte> byteAlloc{};
-
-  std::byte *data_;
-  std::size_t size_;
-  std::size_t capacity_;
-
-  BufferType type_;
-
-public:
-  Buffer(const Buffer &) = delete;
-  Buffer &operator=(const Buffer &) = delete;
-
-  Buffer(Buffer &&) noexcept = default;
-  Buffer &operator=(Buffer &&) noexcept = default;
-
-  Buffer() : data_{nullptr}, size_{0}, capacity_{0}, type_{BufferType::View} {
-  }
-
-  Buffer(std::span<const std::byte> view) : Buffer() {
-    data_ = const_cast<std::byte *>(view.data());
-    size_ = view.size_bytes();
-    type_ = BufferType::View;
-  }
-
-  Buffer(std::size_t capacity) : Buffer() {
-    try {
-      const auto grownCapacity = std::max<std::size_t>({static_cast<unsigned long long>(64), capacity});
-      data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
-      size_ = 0;
-      capacity_ = grownCapacity;
-      type_ = BufferType::Raw;
-    } catch (const std::bad_alloc &e) {
-      data_ = nullptr;
-      size_ = capacity_ = 0;
-      type_ = BufferType::View;
-    }
-  }
-
-  std::pair<void *, std::size_t> preallocate(std::size_t min, std::size_t newAllocationSize, std::size_t max = std::numeric_limits<std::size_t>::max()) {
-    if (min < capacity_) {
-      return std::make_pair(data_ + size_, capacity_);
-    }
-
-    if (capacity_ >= max) {
-      return std::make_pair(nullptr, 0);
-    }
-
-    const auto grownCapacity = capacity_ + newAllocationSize;
-    std::byte *replacement = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
-
-    if (size_ > 0) {
-      std::memcpy(replacement, data_, size_);
-      if (type_ == BufferType::Raw) {
-        std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
-        data_ = nullptr;
-      }
-    }
-
-    capacity_ = grownCapacity - size_;
-    data_ = replacement;
-    type_ = BufferType::Raw;
-
-    return std::make_pair(data_ + size_, capacity_);
-  }
-
-  void postallocate(std::size_t n) noexcept {
-    capacity_ -= n;
-    size_ += n;
-  }
-
-  void append(const std::byte *begin, const std::byte *end) {
-    auto [buffer, size] = preallocate(static_cast<std::size_t>(end - begin), ((static_cast<size_t>(end - begin) / 64) + 1) * 64);
-    if (begin != nullptr && begin != end && begin < end) [[likely]] {
-      std::memcpy(static_cast<std::byte *>(buffer), begin, static_cast<std::size_t>(end - begin));
-      postallocate(static_cast<std::size_t>(end - begin));
-    }
-  }
-
-  void swap(Buffer &other) noexcept {
-    using std::swap;
-    swap(data_, other.data_);
-    swap(size_, other.size_);
-    swap(capacity_, other.capacity_);
-    swap(type_, other.type_);
-  }
-
-  void reset() noexcept {
-    data_ = nullptr;
-    size_ = 0;
-    capacity_ = 0;
-    type_ = BufferType::View;
-  }
-
-  [[nodiscard]] std::byte *data() const {
-    return data_;
-  }
-
-  [[nodiscard]] std::size_t size() const {
-    return size_;
-  }
-
-  [[nodiscard]] std::size_t capacity() const {
-    return capacity_;
-  }
-
-  ~Buffer() {
-    if (type_ != BufferType::View) {
-      std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
-    }
   }
 };
 
@@ -288,7 +245,7 @@ public:
       return document;
     }
 
-    Buffer bytes(data);
+    BufferT bytes(data);
 
     document.data_.swap(bytes);
     document.encodedSize_ = 0;
@@ -306,23 +263,16 @@ public:
 
   template <typename Container>
   [[nodiscard]] static NbtParser parse(const Container &data, const Options &options) {
-    std::span<const std::byte> view = std::as_bytes(std::span(data));
-
-    if (view.empty()) {
+    if (data.empty()) {
       NbtParser document;
       document.status_ = Status::NeedMoreData;
       return document;
     }
 
-    Buffer bytes;
-    auto [buffer, size] = bytes.preallocate(view.size_bytes(), view.size_bytes() * 2);
-    if (buffer == nullptr) [[unlikely]] {
-      nbt::NbtParser<BufferT> document;
-      document.status_ = Status::Error;
-      return document;
-    }
-    std::memcpy(buffer, view.data(), size);
-    bytes.postallocate(view.size());
+    const std::span<const std::byte> view = asBytes(data);
+
+    BufferT bytes;
+    bytes.append(view.data(), view.data() + view.size_bytes());
 
     nbt::NbtParser<BufferT> document;
     document.data_.swap(bytes);
@@ -340,17 +290,130 @@ private:
     std::uint32_t payload{};
     std::uint32_t nameOffset{};
     std::uint32_t firstChild{};
-    std::uint32_t subtreeEnd{};
+    std::uint32_t nextSibling{};
     std::uint32_t childCount{};
     std::uint16_t nameSize{};
-    std::string name;
     Type type{Type::End};
     Type elementType{Type::End};
   };
 
 public:
+  template <typename T>
+  class ArrayView {
+  public:
+    class Iterator {
+    public:
+      Iterator() = default;
+
+      Iterator(const ArrayView *view, std::size_t index) : view_(view), index_(index) {
+      }
+
+      [[nodiscard]] T operator*() const {
+        return (*view_)[index_];
+      }
+
+      Iterator &operator++() noexcept {
+        ++index_;
+        return *this;
+      }
+
+      Iterator operator++(int) noexcept {
+        Iterator copy{view_, index_};
+        ++index_;
+        return copy;
+      }
+
+      [[nodiscard]] bool operator==(const Iterator &other) const noexcept {
+        return view_ == other.view_ && index_ == other.index_;
+      }
+
+      [[nodiscard]] bool operator!=(const Iterator &other) const noexcept {
+        return !(*this == other);
+      }
+
+    private:
+      const ArrayView *view_{};
+      std::size_t index_{0};
+    };
+
+    ArrayView() = default;
+
+    ArrayView(const NbtParser *owner, std::size_t payload) : owner_(owner), payload_(payload) {
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+      return owner_ ? static_cast<std::size_t>(owner_->readNumber<std::int32_t>(payload_)) : 0;
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+      return size() == 0;
+    }
+
+    [[nodiscard]] T operator[](std::size_t index) const {
+      return owner_->readNumber<T>(payload_ + 4 + sizeof(T) * index);
+    }
+
+    [[nodiscard]] T front() const {
+      return (*this)[0];
+    }
+
+    [[nodiscard]] T back() const {
+      return (*this)[size() - 1];
+    }
+
+    [[nodiscard]] Iterator begin() const noexcept {
+      return {this, 0};
+    }
+
+    [[nodiscard]] Iterator end() const noexcept {
+      return {this, size()};
+    }
+
+  private:
+    const NbtParser *owner_{};
+    std::size_t payload_{0};
+  };
+
+  using IntArrayView = ArrayView<Tag::Int>;
+  using LongArrayView = ArrayView<Tag::Long>;
+
   class View {
   public:
+    class Iterator {
+    public:
+      Iterator() = default;
+
+      Iterator(const NbtParser *owner, std::uint32_t node) : owner_(owner), node_(node) {
+      }
+
+      [[nodiscard]] View operator*() const {
+        return {owner_, node_};
+      }
+
+      Iterator &operator++() {
+        node_ = owner_->nodes_[node_].nextSibling;
+        return *this;
+      }
+
+      Iterator operator++(int) {
+        Iterator copy{*this};
+        ++*this;
+        return copy;
+      }
+
+      [[nodiscard]] bool operator==(const Iterator &other) const noexcept {
+        return owner_ == other.owner_ && node_ == other.node_;
+      }
+
+      [[nodiscard]] bool operator!=(const Iterator &other) const noexcept {
+        return !(*this == other);
+      }
+
+    private:
+      const NbtParser *owner_{};
+      std::uint32_t node_{0};
+    };
+
     View() = default;
 
     [[nodiscard]] explicit operator bool() const noexcept {
@@ -361,11 +424,15 @@ public:
       return node().type;
     }
 
-    [[nodiscard]] std::size_t begin() const {
+    [[nodiscard]] Type elementType() const {
+      return owner_ != nullptr ? node().elementType : Type::End;
+    }
+
+    [[nodiscard]] std::size_t payloadBegin() const {
       return node().begin;
     }
 
-    [[nodiscard]] std::size_t end() const {
+    [[nodiscard]] std::size_t payloadEnd() const {
       return node().end;
     }
 
@@ -374,8 +441,16 @@ public:
       return owner_->text(entry.nameOffset, entry.nameSize);
     }
 
-    [[nodiscard]] std::size_t childCount() const {
-      return node().childCount;
+    [[nodiscard]] std::size_t size() const {
+      return owner_ != nullptr ? node().childCount : 0;
+    }
+
+    [[nodiscard]] bool empty() const {
+      return size() == 0;
+    }
+
+    [[nodiscard]] View operator[](std::size_t index) const {
+      return child(index);
     }
 
     [[nodiscard]] View child(std::size_t position) const {
@@ -385,20 +460,31 @@ public:
       }
       std::uint32_t current = entry.firstChild;
       for (std::size_t index = 0; index < position; ++index) {
-        current = owner_->nodes_[current].subtreeEnd;
+        current = owner_->nodes_[current].nextSibling;
       }
       return {owner_, current};
     }
 
     [[nodiscard]] View find(std::string_view requestedName) const {
-      const size_t childCount = this->childCount();
-      for (std::size_t index = 0; index < childCount; ++index) {
+      const size_t count = this->size();
+      for (std::size_t index = 0; index < count; ++index) {
         auto candidate = child(index);
         if (candidate.name() == requestedName) {
           return candidate;
         }
       }
       return {};
+    }
+
+    [[nodiscard]] Iterator begin() const {
+      if (owner_ == nullptr || node().childCount == 0) {
+        return {owner_, noNode};
+      }
+      return {owner_, node().firstChild};
+    }
+
+    [[nodiscard]] Iterator end() const {
+      return {owner_, noNode};
     }
 
     template <Type t>
@@ -424,9 +510,11 @@ public:
         const auto count = owner_->readNumber<std::int32_t>(node().payload);
         return std::span<const std::byte>{owner_->data_.data() + node().payload + 4, static_cast<std::size_t>(count)};
       } else if constexpr (t == Type::IntArray) {
-        return std::get<std::vector<std::int32_t>>(materialize().payload);
+        return IntArrayView(owner_, node().payload);
       } else if constexpr (t == Type::LongArray) {
-        return std::get<std::vector<std::int64_t>>(materialize().payload);
+        return LongArrayView(owner_, node().payload);
+      } else if constexpr (t == Type::List || t == Type::Compound) {
+        return View(owner_, index_);
       } else {
         static_assert(false, "Invalid NBT type");
       }
@@ -498,7 +586,7 @@ public:
 
   template <typename Container>
   void append(const Container &chunk, const Options &options) {
-    append(std::as_bytes(chunk), options);
+    append(asBytes(chunk), options);
   }
 
   void append(std::span<const std::byte> chunk) {
@@ -566,36 +654,63 @@ public:
     return root().materialize();
   }
 
-  [[nodiscard]] std::vector<std::byte> encode(Format format = Format::File) const {
-    if (complete() && format == options_.format) {
-      return {data_.data(), data_.data() + encodedSize_};
-    }
-
-    Tag value = materialize();
-    if (format == Format::Network && value.type != Type::Compound) {
-      throw std::invalid_argument("Network NBT root must be TAG_Compound");
-    }
-    size_t size = encodedSize(value, format);
-
-    std::vector<std::byte> output;
-    output.reserve(size);
-
-    if (format == Format::Network) {
-      appendNumber(output, static_cast<std::uint8_t>(Type::Compound));
-      appendPayload(output, value);
-    } else {
-      appendNamed(output, value);
-    }
-
+  [[nodiscard]] BufferT encode(Source format = Source::File) const {
+    BufferT output;
+    encode(output, format);
     return output;
   }
 
-  [[nodiscard]] static std::size_t encodedSize(const Tag &rootValue, Format format = Format::File) {
-    if (format == Format::Network && rootValue.type != Type::Compound) {
+  void encode(BufferT &output, Source format = Source::File) const {
+    if (complete() && format == options_.format) {
+      auto [buffer, size] = output.preallocate(encodedSize_, BufferUtils::growthSize(encodedSize_));
+      if (buffer == nullptr) {
+        throw std::bad_alloc();
+      }
+      std::memcpy(buffer, data_.data(), encodedSize_);
+      output.postallocate(encodedSize_);
+      return;
+    }
+
+    Tag value = materialize();
+    if (format == Source::Network && value.type != Type::Compound) {
       throw std::invalid_argument("Network NBT root must be TAG_Compound");
     }
-    size_t size = valueSize(rootValue, format == Format::File);
-    return format == Format::Network ? size + 1 : size;
+
+    validateRootTag(value, format);
+
+    const std::size_t valueEncodedSize = encodedSize(value, format == Source::File);
+    auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
+    if (buffer == nullptr) {
+      throw std::bad_alloc();
+    }
+
+    BufferWriter appender{static_cast<std::byte *>(buffer), available};
+
+    if (format == Source::Network) {
+      appendNumber(appender, static_cast<std::uint8_t>(Type::Compound));
+      appendPayload(appender, value);
+    } else {
+      appendNamed(appender, value);
+    }
+    output.postallocate(appender.written());
+  }
+
+  static void validateRootTag(const Tag &root, const Source source = Source::File) {
+    if (source == Source::Network && root.type != Type::Compound) {
+      throw std::invalid_argument("Network NBT root must be TAG_Compound");
+    }
+    if (root.type == Type::End) {
+      throw std::invalid_argument("Tag is TAG_End");
+    }
+  }
+
+  [[nodiscard]] static std::size_t encodedSize(const Tag &value, const bool named = true) {
+    std::size_t size = 1;
+    if (named) {
+      size += stringSize(value.name);
+    }
+
+    return size + payloadSize(value);
   }
 
 private:
@@ -608,8 +723,8 @@ private:
       if (data_.size() > options_.maxInputBytes) {
         throw Error("NBT input byte limit exceeded", 0);
       }
-      if (options_.format == Format::File) {
-        parseNamed(noNode, 0);
+      if (options_.format == Source::File) {
+        parseNamed(noNode, 0, noNode);
       } else {
         const auto begin = position_;
         const auto type = readType();
@@ -631,18 +746,22 @@ private:
     }
   }
 
-  void parseNamed(std::uint32_t parent, std::size_t depth) {
+  std::uint32_t parseNamed(std::uint32_t parent, std::size_t depth, std::uint32_t previousSibling) {
     const auto begin = position_;
     const auto type = readType();
     if (type == Type::End) {
       throw Error("named TAG_End", begin);
     }
     const auto nodeIndex = beginNode(type, begin, parent);
+    if (previousSibling != noNode) {
+      nodes_[previousSibling].nextSibling = nodeIndex;
+    }
     const auto nameSize = readNumber<std::uint16_t>();
     nodes_[nodeIndex].nameOffset = checkedOffset(position_);
     nodes_[nodeIndex].nameSize = nameSize;
     skip(nameSize);
     parsePayload(nodeIndex, type, depth);
+    return nodeIndex;
   }
 
   void parsePayload(std::uint32_t nodeIndex, Type type, std::size_t depth) {
@@ -687,7 +806,6 @@ private:
       throw Error("unexpected TAG_End", position_);
     }
     nodes_[nodeIndex].end = checkedOffset(position_);
-    nodes_[nodeIndex].subtreeEnd = checkedOffset(nodes_.size());
   }
 
   void parseList(std::uint32_t nodeIndex, std::size_t depth) {
@@ -700,8 +818,13 @@ private:
     node.elementType = elementType;
     node.childCount = checkedOffset(count);
     node.firstChild = checkedOffset(nodes_.size());
+    std::uint32_t previousSibling = noNode;
     for (std::size_t index = 0; index < count; ++index) {
       const auto child = beginNode(elementType, position_, nodeIndex);
+      if (previousSibling != noNode) {
+        nodes_[previousSibling].nextSibling = child;
+      }
+      previousSibling = child;
       parsePayload(child, elementType, depth + 1);
     }
   }
@@ -709,11 +832,12 @@ private:
   void parseCompound(std::uint32_t nodeIndex, std::size_t depth) {
     nodes_[nodeIndex].firstChild = checkedOffset(nodes_.size());
     std::size_t count{};
+    std::uint32_t previousSibling = noNode;
     while (peek() != std::byte{}) {
       if (count >= options_.maxContainerElements) {
         throw Error("NBT container element limit exceeded", position_);
       }
-      parseNamed(nodeIndex, depth + 1);
+      previousSibling = parseNamed(nodeIndex, depth + 1, previousSibling);
       ++count;
     }
     skip(1);
@@ -729,7 +853,7 @@ private:
     node.begin = checkedOffset(begin);
     node.type = type;
     node.firstChild = index + 1;
-    node.subtreeEnd = index + 1;
+    node.nextSibling = noNode;
     nodes_.push_back(node);
     (void)parent;
     return index;
@@ -818,22 +942,22 @@ private:
     value.name.assign(text(node.nameOffset, node.nameSize));
     switch (node.type) {
     case Type::Byte:
-      value.payload = readNumber<std::int8_t>(node.payload);
+      value.payload = readNumber<Tag::Byte>(node.payload);
       break;
     case Type::Short:
-      value.payload = readNumber<std::int16_t>(node.payload);
+      value.payload = readNumber<Tag::Short>(node.payload);
       break;
     case Type::Int:
-      value.payload = readNumber<std::int32_t>(node.payload);
+      value.payload = readNumber<Tag::Int>(node.payload);
       break;
     case Type::Long:
-      value.payload = readNumber<std::int64_t>(node.payload);
+      value.payload = readNumber<Tag::Long>(node.payload);
       break;
     case Type::Float:
-      value.payload = readNumber<float>(node.payload);
+      value.payload = readNumber<Tag::Float>(node.payload);
       break;
     case Type::Double:
-      value.payload = readNumber<double>(node.payload);
+      value.payload = readNumber<Tag::Double>(node.payload);
       break;
     case Type::String:
       value.payload = std::string(View(this, nodeIndex).template as<Type::String>());
@@ -846,23 +970,19 @@ private:
       break;
     }
     case Type::IntArray: {
-      const auto count = readNumber<std::int32_t>(node.payload);
-      std::vector<std::int32_t> result(static_cast<std::size_t>(count));
-      auto offset = static_cast<std::size_t>(node.payload) + 4;
-      for (auto &element : result) {
-        element = readNumber<std::int32_t>(offset);
-        offset += 4;
+      IntArrayView view(this, node.payload);
+      std::vector<std::int32_t> result(view.size());
+      for (std::size_t index = 0; index < result.size(); ++index) {
+        result[index] = view[index];
       }
       value.payload = std::move(result);
       break;
     }
     case Type::LongArray: {
-      const auto count = readNumber<std::int32_t>(node.payload);
-      std::vector<std::int64_t> result(static_cast<std::size_t>(count));
-      auto offset = static_cast<std::size_t>(node.payload) + 4;
-      for (auto &element : result) {
-        element = readNumber<std::int64_t>(offset);
-        offset += 8;
+      LongArrayView view(this, node.payload);
+      std::vector<std::int64_t> result(view.size());
+      for (std::size_t index = 0; index < result.size(); ++index) {
+        result[index] = view[index];
       }
       value.payload = std::move(result);
       break;
@@ -893,7 +1013,7 @@ private:
   }
 
   template <class T>
-  static void appendNumber(std::vector<std::byte> &output, T value) {
+  static void appendNumber(BufferWriter &output, T value) {
     using Bits = std::conditional_t<sizeof(T) == 1, std::uint8_t, std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>>;
     const Bits bits = [&] {
       if constexpr (std::is_floating_point_v<T>) {
@@ -903,44 +1023,91 @@ private:
       }
     }();
     for (std::size_t index = sizeof(T); index > 0; --index) {
-      output.push_back(static_cast<std::byte>((bits >> ((index - 1) * 8)) & 0xff));
+      output.put(static_cast<std::byte>((bits >> ((index - 1) * 8)) & 0xff));
     }
   }
 
-  static size_t stringSize(std::string_view value) {
+  static std::size_t stringSize(std::string_view value) {
     if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) {
       throw std::length_error("NBT string exceeds 65535 bytes");
     }
-    return std::span(value).size_bytes() + 2;
+    return value.size() + 2;
   }
 
-  static void appendString(std::vector<std::byte> &output, std::string_view value) {
+  static std::size_t listSize(const Tag &parent, const std::vector<Tag> &values) {
+    if (values.size() > (std::numeric_limits<std::uint32_t>::max)()) {
+      throw std::length_error("NBT container exceeds 4294967295 bytes");
+    }
+    size_t size = 5;
+    switch (parent.elementType) {
+    case Type::Byte: {
+      size += values.size();
+      break;
+    }
+    case Type::Short: {
+      size += values.size() * 2;
+      break;
+    }
+    case Type::Float:
+    case Type::Int: {
+      size += values.size() * 4;
+      break;
+    }
+    case Type::Double:
+    case Type::Long: {
+      size += values.size() * 8;
+      break;
+    }
+    case Type::List:
+    case Type::Compound:
+    case Type::String: {
+      for (const auto &element : values) {
+        if (element.type != parent.elementType || !element.name.empty()) {
+          throw std::invalid_argument("invalid TAG_List element");
+        }
+        size += payloadSize(element);
+      }
+    }
+    default:
+      break;
+    }
+    return size;
+  }
+
+  template <typename T>
+  static std::size_t arraySize(const std::vector<T> &values) {
+    using disjunction = std::disjunction<std::is_same<T, Tag::Byte>, std::is_same<T, Tag::Int>, std::is_same<T, Tag::Long>>;
+    static_assert(disjunction::value, "T is not supported as array or list");
+    if (values.size() > (std::numeric_limits<std::uint32_t>::max)()) {
+      throw std::length_error("NBT container exceeds 4294967295 bytes");
+    }
+    return (values.size() * sizeof(T)) + 4;
+  }
+
+  static std::size_t compoundSize(const std::vector<Tag> &values) {
+    std::size_t size = 1;
+    for (const auto &element : values) {
+      size += encodedSize(element, true);
+    }
+    return size;
+  }
+
+  static void appendString(BufferWriter &output, std::string_view value) {
     if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) {
       throw std::length_error("NBT string exceeds 65535 bytes");
     }
     appendNumber(output, static_cast<std::uint16_t>(value.size()));
-    const auto bytes = std::as_bytes(std::span(value));
-    output.insert(output.end(), bytes.begin(), bytes.end());
+    output.write(value.data(), value.size());
   }
 
-  static void appendLength(std::vector<std::byte> &output, std::size_t size) {
+  static void appendLength(BufferWriter &output, std::size_t size) {
     if (size > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) {
       throw std::length_error("NBT container is too large");
     }
     appendNumber(output, static_cast<std::int32_t>(size));
   }
 
-  static std::size_t namedSize(const Tag &value) {
-    if (value.type == Type::End) {
-      throw std::invalid_argument("named TAG_End");
-    }
-    std::size_t size = stringSize(value.name);
-    size += payloadSize(value);
-    size++;
-    return size;
-  }
-
-  static void appendNamed(std::vector<std::byte> &output, const Tag &value) {
+  static void appendNamed(BufferWriter &output, const Tag &value) {
     if (value.type == Type::End) {
       throw std::invalid_argument("named TAG_End");
     }
@@ -950,70 +1117,36 @@ private:
   }
 
   static std::size_t payloadSize(const Tag &value) {
-    std::size_t size = 0;
     switch (value.type) {
     case Type::Byte:
-      size++;
-      break;
+      return 1;
     case Type::Short:
-      size += 2;
-      break;
+      return 2;
     case Type::Float:
     case Type::Int:
-      size += 4;
-      break;
+      return 4;
     case Type::Double:
     case Type::Long:
-      size += 8;
-      break;
+      return 8;
     case Type::String:
-      size += stringSize(std::get<std::string>(value.payload));
-      break;
-    case Type::ByteArray: {
-      const auto &values = std::get<std::vector<std::int8_t>>(value.payload);
-      size += 4;
-      const auto bytes = std::as_bytes(std::span(values));
-      size += bytes.size_bytes();
-      break;
-    }
-    case Type::IntArray: {
-      const auto &values = std::get<std::vector<std::int32_t>>(value.payload);
-      size += 4;
-      const auto bytes = std::as_bytes(std::span(values));
-      size += bytes.size_bytes();
-      break;
-    }
-    case Type::LongArray: {
-      const auto &values = std::get<std::vector<std::int64_t>>(value.payload);
-      size += 4;
-      const auto bytes = std::as_bytes(std::span(values));
-      size += bytes.size_bytes();
-      break;
-    }
-    case Type::List: {
-      const auto &listValue = std::get<Tag::Container>(value.payload);
-      size += 5;
-      for (const auto &element : listValue) {
-        if (element.type != value.elementType || !element.name.empty()) {
-          throw std::invalid_argument("invalid TAG_List element");
-        }
-        size += payloadSize(element);
-      }
-      break;
-    }
+      return stringSize(std::get<std::string>(value.payload));
+    case Type::ByteArray:
+      return arraySize(std::get<Tag::ByteArray>(value.payload));
+    case Type::IntArray:
+      return arraySize(std::get<Tag::IntArray>(value.payload));
+    case Type::LongArray:
+      return arraySize(std::get<Tag::LongArray>(value.payload));
+    case Type::List:
+      return listSize(value, std::get<Tag::Container>(value.payload));
     case Type::Compound:
-      for (const auto &child : std::get<Tag::Container>(value.payload)) {
-        size += namedSize(child);
-      }
-      size++;
-      break;
+      return compoundSize(std::get<Tag::Container>(value.payload));
+    default:
     case Type::End:
-      break;
+      return 0;
     }
-    return size;
   }
 
-  static void appendPayload(std::vector<std::byte> &output, const Tag &value) {
+  static void appendPayload(BufferWriter &output, const Tag &value) {
     switch (value.type) {
     case Type::Byte:
       appendNumber(output, std::get<std::int8_t>(value.payload));
@@ -1039,8 +1172,7 @@ private:
     case Type::ByteArray: {
       const auto &values = std::get<std::vector<std::int8_t>>(value.payload);
       appendLength(output, values.size());
-      const auto bytes = std::as_bytes(std::span(values));
-      output.insert(output.end(), bytes.begin(), bytes.end());
+      output.write(values.data(), values.size());
       break;
     }
     case Type::IntArray: {
@@ -1075,21 +1207,20 @@ private:
       for (const auto &child : std::get<Tag::Container>(value.payload)) {
         appendNamed(output, child);
       }
-      output.push_back(std::byte{});
+      output.put(std::byte{0});
       break;
     case Type::End:
       break;
     }
   }
 
-  [[nodiscard]] static std::size_t valueSize(const Tag &value, bool named) {
-    std::size_t size = 0;
-    if (named) {
-      size += namedSize(value);
+  template <typename Container>
+  [[nodiscard]] static std::span<const std::byte> asBytes(const Container &data) {
+    if constexpr (requires { std::as_bytes(std::span(data)); }) {
+      return std::as_bytes(std::span(data));
     } else {
-      size += payloadSize(value);
+      return std::span<const std::byte>{data.data(), data.size()};
     }
-    return size;
   }
 
   static constexpr std::uint32_t noNode = (std::numeric_limits<std::uint32_t>::max)();
@@ -1103,6 +1234,40 @@ private:
   mutable std::size_t position_{0};
   std::vector<Node> nodes_;
 };
+
+namespace tag_literals {
+
+[[nodiscard]] constexpr Tag::String operator""_s(const char *str, size_t len) {
+  return Tag::String(str, len);
+}
+
+[[nodiscard]] constexpr Tag::Byte operator""_b(std::uint64_t value) {
+  return Tag::Byte(value);
+}
+
+[[nodiscard]] constexpr Tag::Short operator""_s(std::uint64_t value) {
+  return Tag::Short(value);
+}
+
+[[nodiscard]] constexpr Tag::Int operator""_i(std::uint64_t value) {
+  return Tag::Int(value);
+}
+
+[[nodiscard]] constexpr Tag::Long operator""_l(std::uint64_t value) {
+  return Tag::Long(value);
+}
+
+Tag &operator|(const std::string &name, Tag &value) {
+  value.name = name;
+  return value;
+}
+
+Tag operator|(std::string &&name, Tag &&value) {
+  value.name = std::move(name);
+  return value;
+}
+
+} // namespace tag_literals
 
 using Nbt = NbtParser<nbt::Buffer>;
 

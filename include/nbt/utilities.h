@@ -69,9 +69,11 @@ public:
 
   template <typename BufferT = nbt::Buffer>
   [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path, Compression compression, const nbt::Options &options) {
-    const auto fileBytes = readFile(path);
-    const auto resolved = compression == Compression::Auto ? detectCompression(fileBytes) : compression;
-    auto bytes = resolved == Compression::None ? fileBytes : inflate(fileBytes, resolved);
+    auto bytes = readFile<BufferT>(path);
+    const auto resolved = compression == Compression::Auto ? detectCompression(bytes) : compression;
+    if (resolved != Compression::None) {
+      bytes = inflate(bytes, resolved);
+    }
     Nbt document = nbt::NbtParser<BufferT>::parse(bytes, options);
     if (!document.complete()) [[unlikely]] {
       throw nbt::Error("truncated NBT file", bytes.size());
@@ -80,12 +82,17 @@ public:
   }
 
   template <typename BufferT = nbt::Buffer>
-  static void save(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, nbt::Format format = nbt::Format::File, int level = Z_DEFAULT_COMPRESSION) {
+  static void save(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, nbt::Source format = nbt::Source::File, int level = Z_DEFAULT_COMPRESSION) {
     if (compression == Compression::Auto) {
       throw std::invalid_argument("Auto compression is invalid for output");
     }
     const auto encoded = document.encode(format);
-    const auto bytes = compression == Compression::None ? encoded : deflate(encoded, compression, level);
+    std::span<const std::byte> bytes{encoded.data(), encoded.size()};
+    BufferT compressed;
+    if (compression != Compression::None) {
+      compressed = deflate(bytes, compression, level);
+      bytes = std::span<const std::byte>{compressed.data(), compressed.size()};
+    }
     writeFile(path, bytes);
   }
 
@@ -246,22 +253,23 @@ private:
       return nbt::Tag(std::move(name), elementType, std::move(values));
     }
 
+    template <class T>
+    [[nodiscard]] nbt::Tag readTypedArrayImpl(std::string name) {
+      std::vector<T> values;
+      readArrayValues(values);
+      return nbt::Tag(std::move(name), std::move(values));
+    }
+
     [[nodiscard]] nbt::Tag readTypedArray(std::string name) {
       const auto kind = input_[position_++];
       expect(';');
       if (kind == 'B') {
-        std::vector<std::int8_t> values;
-        readArrayValues(values);
-        return nbt::Tag(std::move(name), std::move(values));
+        return readTypedArrayImpl<std::int8_t>(std::move(name));
       }
       if (kind == 'I') {
-        std::vector<std::int32_t> values;
-        readArrayValues(values);
-        return nbt::Tag(std::move(name), std::move(values));
+        return readTypedArrayImpl<std::int32_t>(std::move(name));
       }
-      std::vector<std::int64_t> values;
-      readArrayValues(values);
-      return nbt::Tag(std::move(name), std::move(values));
+      return readTypedArrayImpl<std::int64_t>(std::move(name));
     }
 
     template <class T>
@@ -275,8 +283,9 @@ private:
           token.pop_back();
         }
         T value{};
-        const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
-        if (result.ec != std::errc{} || result.ptr != token.data() + token.size()) {
+        try {
+          value = parseNumber<T>(token);
+        } catch (const std::exception &) {
           fail("invalid SNBT array value");
         }
         values.push_back(value);
@@ -304,41 +313,31 @@ private:
       const auto numeric = suffix == 'b' || suffix == 's' || suffix == 'l' || suffix == 'f' || suffix == 'd' ? std::string_view(token).substr(0, token.size() - 1) : std::string_view(token);
       try {
         if (suffix == 'b') {
-          return nbt::Tag(std::move(name), parseInteger<std::int8_t>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<std::int8_t>(numeric));
         }
         if (suffix == 's') {
-          return nbt::Tag(std::move(name), parseInteger<std::int16_t>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<std::int16_t>(numeric));
         }
         if (suffix == 'l') {
-          return nbt::Tag(std::move(name), parseInteger<std::int64_t>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<std::int64_t>(numeric));
         }
         if (suffix == 'f') {
-          return nbt::Tag(std::move(name), parseFloat<float>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<float>(numeric));
         }
         if (suffix == 'd') {
-          return nbt::Tag(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<double>(numeric));
         }
         if (token.find_first_of(".eE") != std::string::npos) {
-          return nbt::Tag(std::move(name), parseFloat<double>(numeric));
+          return nbt::Tag(std::move(name), parseNumber<double>(numeric));
         }
-        return nbt::Tag(std::move(name), parseInteger<std::int32_t>(numeric));
+        return nbt::Tag(std::move(name), parseNumber<std::int32_t>(numeric));
       } catch (const std::exception &) {
         return nbt::Tag(std::move(name), token);
       }
     }
 
     template <class T>
-    [[nodiscard]] static T parseInteger(std::string_view text) {
-      T value{};
-      const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
-      if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
-        throw std::invalid_argument("not an integer");
-      }
-      return value;
-    }
-
-    template <class T>
-    [[nodiscard]] static T parseFloat(std::string_view text) {
+    [[nodiscard]] static T parseNumber(std::string_view text) {
       T value{};
       const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
       if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
@@ -367,6 +366,12 @@ private:
     output.push_back('"');
   }
 
+  template <class T>
+  static void appendNumber(std::string &output, T value, std::string_view suffix = {}) {
+    output += std::to_string(value);
+    output.append(suffix);
+  }
+
   static void writeSnbt(std::string &output, const nbt::Tag &value, bool pretty, std::size_t depth, bool includeName) {
     if (includeName && !value.name.empty()) {
       appendQuoted(output, value.name);
@@ -377,22 +382,22 @@ private:
     }
     switch (value.type) {
     case nbt::Type::Byte:
-      output += std::to_string(std::get<std::int8_t>(value.payload)) + "b";
+      appendNumber(output, std::get<std::int8_t>(value.payload), "b");
       break;
     case nbt::Type::Short:
-      output += std::to_string(std::get<std::int16_t>(value.payload)) + "s";
+      appendNumber(output, std::get<std::int16_t>(value.payload), "s");
       break;
     case nbt::Type::Int:
-      output += std::to_string(std::get<std::int32_t>(value.payload));
+      appendNumber(output, std::get<std::int32_t>(value.payload));
       break;
     case nbt::Type::Long:
-      output += std::to_string(std::get<std::int64_t>(value.payload)) + "L";
+      appendNumber(output, std::get<std::int64_t>(value.payload), "L");
       break;
     case nbt::Type::Float:
-      output += std::to_string(std::get<float>(value.payload)) + "f";
+      appendNumber(output, std::get<float>(value.payload), "f");
       break;
     case nbt::Type::Double:
-      output += std::to_string(std::get<double>(value.payload)) + "d";
+      appendNumber(output, std::get<double>(value.payload), "d");
       break;
     case nbt::Type::String:
       appendQuoted(output, std::get<std::string>(value.payload));
@@ -453,13 +458,13 @@ private:
       if (index) {
         output.push_back(',');
       }
-      output += std::to_string(values[index]);
-      output.append(suffix);
+      appendNumber(output, values[index], suffix);
     }
     output.push_back(']');
   }
 
-  [[nodiscard]] static std::vector<std::byte> readFile(const std::filesystem::path &path) {
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static BufferT readFile(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
       throw std::runtime_error("cannot open NBT file");
@@ -468,11 +473,19 @@ private:
     if (end < 0) {
       throw std::runtime_error("cannot determine NBT file size");
     }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    const auto size = static_cast<std::size_t>(end);
     input.seekg(0);
-    input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!input) {
-      throw std::runtime_error("cannot read NBT file");
+    BufferT bytes;
+    if (size > 0) {
+      auto [buffer, available] = bytes.preallocate(size, size);
+      if (buffer == nullptr) {
+        throw std::bad_alloc{};
+      }
+      input.read(reinterpret_cast<char *>(buffer), static_cast<std::streamsize>(size));
+      if (input.fail()) [[unlikely]] {
+        throw std::runtime_error("cannot read NBT file");
+      }
+      bytes.postallocate(size);
     }
     return bytes;
   }
@@ -498,7 +511,8 @@ private:
     return Compression::None;
   }
 
-  [[nodiscard]] static std::vector<std::byte> inflate(std::span<const std::byte> input, Compression compression) {
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static BufferT inflate(std::span<const std::byte> input, Compression compression) {
     z_stream stream{};
     const auto windowBits = compression == Compression::Gzip ? 15 + 16 : 15;
     if (inflateInit2(&stream, windowBits) != Z_OK) {
@@ -506,7 +520,7 @@ private:
     }
     stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(input.data()));
     stream.avail_in = static_cast<uInt>(input.size());
-    std::vector<std::byte> output;
+    BufferT output;
     std::array<std::byte, 64 * 1024> buffer{};
     int result{};
     do {
@@ -517,13 +531,15 @@ private:
         inflateEnd(&stream);
         throw std::runtime_error("invalid compressed NBT data");
       }
-      output.insert(output.end(), buffer.begin(), buffer.begin() + (buffer.size() - stream.avail_out));
+      const auto *producedEnd = buffer.data() + (buffer.size() - stream.avail_out);
+      output.append(buffer.data(), producedEnd);
     } while (result != Z_STREAM_END);
     inflateEnd(&stream);
     return output;
   }
 
-  [[nodiscard]] static std::vector<std::byte> deflate(std::span<const std::byte> input, Compression compression, int level) {
+  template <typename BufferT = nbt::Buffer>
+  [[nodiscard]] static BufferT deflate(std::span<const std::byte> input, Compression compression, int level) {
     z_stream stream{};
     const auto windowBits = compression == Compression::Gzip ? 15 + 16 : 15;
     if (deflateInit2(&stream, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
@@ -531,7 +547,7 @@ private:
     }
     stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(input.data()));
     stream.avail_in = static_cast<uInt>(input.size());
-    std::vector<std::byte> output;
+    BufferT output;
     std::array<std::byte, 64 * 1024> buffer{};
     int result{};
     do {
@@ -542,7 +558,9 @@ private:
         deflateEnd(&stream);
         throw std::runtime_error("cannot compress NBT data");
       }
-      output.insert(output.end(), buffer.begin(), buffer.begin() + (buffer.size() - stream.avail_out));
+      const auto *producedBegin = buffer.data();
+      const auto *producedEnd = producedBegin + (buffer.size() - stream.avail_out);
+      output.append(producedBegin, producedEnd);
     } while (result != Z_STREAM_END);
     deflateEnd(&stream);
     return output;

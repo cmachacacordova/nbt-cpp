@@ -1,12 +1,12 @@
-#include <cstdint>
-
 #include "nbt/nbt.h"
 
 int main() {
   using NBTTag = nbt::Tag;
   using Nbt = nbt::Nbt;
-  using namespace std::string_literals;
+  using namespace nbt::tag_literals;
 
-  Nbt document(NBTTag("root", std::vector<NBTTag>{NBTTag("answer", int32_t(42)), NBTTag("name", "Alex"s)}));
+  NBTTag tag = "name" | "Alex"_s;
+
+  Nbt document(NBTTag("root", std::vector<NBTTag>{"answer"_s | 42_i, tag}));
   return document.encode().empty() ? 1 : 0;
 }

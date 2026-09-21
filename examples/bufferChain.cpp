@@ -1,11 +1,11 @@
-#include <cstdint>
 #include <span>
 
 #include "nbt/nbt.h"
 
 int main() {
   using namespace nbt;
-  const auto bytes = Nbt(Tag("root", std::vector<Tag>{Tag("answer", std::int32_t(42))})).encode();
+  using namespace nbt::tag_literals;
+  const auto bytes = Nbt(Tag("root"_s, Tag::Container{Tag("answer"_s, 42_i)})).encode();
   Nbt document;
   const auto split = bytes.size() / 2;
   if (document.append(std::span(bytes).first(split)); document.status() != Status::NeedMoreData) {

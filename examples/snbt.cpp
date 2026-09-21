@@ -1,4 +1,3 @@
-#include "nbt/nbt.h"
 #include "nbt/utilities.h"
 
 int main() {

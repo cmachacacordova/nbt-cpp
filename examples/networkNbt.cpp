@@ -1,13 +1,12 @@
-#include <cstdint>
-
 #include "nbt/nbt.h"
 
 int main() {
   using namespace nbt;
-  Nbt source(Tag("", std::vector<Tag>{Tag("answer", std::int32_t(42))}));
-  const auto bytes = source.encode(Format::Network);
+  using namespace nbt::tag_literals;
+  Nbt source(Tag("", std::vector<Tag>{Tag("answer"_s, 42_i)}));
+  const auto bytes = source.encode(Source::Network);
   Options options;
-  options.format = Format::Network;
+  options.format = Source::Network;
   Nbt decoded = Nbt::parse(bytes, options);
   if (decoded.status() != Status::Complete) {
     return 1;
