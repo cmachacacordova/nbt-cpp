@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -10,13 +11,9 @@
 
 #include "nbt/nbt.h"
 
-namespace {
+#include "gtest/gtest.h"
 
-void check(bool condition) {
-  if (!condition) {
-    throw std::runtime_error("test assertion failed");
-  }
-}
+namespace {
 
 bool equalBytes(const auto &left, const auto &right) {
   return left.size() == right.size() && std::memcmp(left.data(), right.data(), left.size()) == 0;
@@ -33,38 +30,72 @@ nbt::Tag sample() {
                                         nbt::Tag("nested", std::vector<nbt::Tag>{nbt::Tag("value", float(1.5))})});
 }
 
-void testBufferPrimitives() {
+} // namespace
+
+TEST(CoreTests, BufferPrimitives) {
   nbt::Buffer buffer;
   const std::array input{std::byte{1}, std::byte{2}, std::byte{3}};
   buffer.append(input.data(), input.data() + input.size());
-  check(buffer.size() == input.size());
-  check(!buffer.empty());
-  check(std::memcmp(buffer.data(), input.data(), input.size()) == 0);
+  EXPECT_EQ(buffer.size(), input.size());
+  EXPECT_FALSE(buffer.empty());
+  EXPECT_EQ(std::memcmp(buffer.data(), input.data(), input.size()), 0);
 
   const auto [storage, available] = buffer.preallocate(2);
-  nbt::BufferWriter writer{static_cast<std::byte *>(storage), available};
-  writer.put(std::byte{4});
-  writer.write(std::span<const std::byte>{input}.first(1));
-  check(writer.written() == 2);
-  buffer.postallocate(writer.written());
-  check(buffer.size() == 5);
-
-  bool overflowRejected = false;
-  std::array<std::byte, 1> oneByte{};
-  try {
-    nbt::BufferWriter limited{oneByte.data(), oneByte.size()};
-    limited.write(input.data(), input.size());
-  } catch (const std::overflow_error &) {
-    overflowRejected = true;
-  }
-  check(overflowRejected);
+  ASSERT_NE(storage, nullptr);
+  ASSERT_GE(available, 2);
+  const std::array appended{std::byte{4}, std::byte{1}};
+  std::memcpy(storage, appended.data(), appended.size());
+  buffer.postallocate(appended.size());
+  EXPECT_EQ(buffer.size(), 5);
+  EXPECT_EQ(std::memcmp(buffer.data() + input.size(), appended.data(), appended.size()), 0);
 
   buffer.reset();
-  check(buffer.empty());
-  check(buffer.capacity() == 0);
+  EXPECT_TRUE(buffer.empty());
+  EXPECT_EQ(buffer.capacity(), 0);
 }
 
-void testTagNameOperatorAcceptsStringTypes() {
+TEST(CoreTests, BufferGrowthAndOverlapRejection) {
+  std::array<std::byte, 64> source{};
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    source[index] = static_cast<std::byte>(index);
+  }
+  const auto extension = source;
+
+  nbt::Buffer borrowed{std::span<const std::byte>{source}};
+  EXPECT_EQ(borrowed.capacity(), 0);
+  const auto *borrowedData = borrowed.data();
+  borrowed.append(borrowed.begin(), borrowed.end());
+  EXPECT_GT(borrowed.capacity(), 0);
+  EXPECT_NE(borrowed.data(), borrowedData);
+  EXPECT_EQ(borrowed.size(), source.size() * 2);
+  EXPECT_EQ(std::memcmp(borrowed.data(), source.data(), source.size()), 0);
+  EXPECT_EQ(std::memcmp(borrowed.data() + source.size(), source.data(), source.size()), 0);
+  borrowed.append(extension.data(), extension.data() + extension.size());
+  EXPECT_EQ(borrowed.size(), source.size() * 2 + extension.size());
+  EXPECT_GE(borrowed.capacity(), borrowed.size());
+  EXPECT_EQ(std::memcmp(borrowed.data(), source.data(), source.size()), 0);
+  EXPECT_EQ(std::memcmp(borrowed.data() + source.size(), extension.data(), extension.size()), 0);
+
+  const auto sizeBeforeOverlap = borrowed.size();
+  const auto *overlapBegin = borrowed.data() + 1;
+  EXPECT_THROW(borrowed.append(overlapBegin, overlapBegin + 8), std::invalid_argument);
+  EXPECT_EQ(borrowed.size(), sizeBeforeOverlap);
+
+  nbt::Buffer limited;
+  const auto [storage, available] = limited.preallocate(4, 64, 3);
+  EXPECT_EQ(storage, nullptr);
+  EXPECT_EQ(available, 0);
+
+  nbt::Buffer reserved{1};
+  EXPECT_THROW(reserved.postallocate(reserved.capacity() + 1), std::overflow_error);
+
+  EXPECT_EQ(nbt::BufferUtils::growthSize(0), 0);
+  EXPECT_EQ(nbt::BufferUtils::growthSize(64), 64);
+  EXPECT_EQ(nbt::BufferUtils::growthSize(65), 128);
+  EXPECT_EQ(nbt::BufferUtils::growthSize((std::numeric_limits<std::size_t>::max)()), (std::numeric_limits<std::size_t>::max)());
+}
+
+TEST(CoreTests, TagNameOperatorAcceptsStringTypes) {
   using namespace nbt::tag_literals;
 
   const std::string stringName = "std::string";
@@ -79,15 +110,15 @@ void testTagNameOperatorAcceptsStringTypes() {
   auto existingTag = nbt::Tag(5_ti);
   auto &namedTag = viewName | existingTag;
 
-  check(stringTag.name == stringName);
-  check(viewTag.name == viewName);
-  check(pointerTag.name == pointerName);
-  check(arrayTag.name == arrayName);
-  check(&namedTag == &existingTag);
-  check(namedTag.name == viewName);
+  EXPECT_EQ(stringTag.name, stringName);
+  EXPECT_EQ(viewTag.name, viewName);
+  EXPECT_EQ(pointerTag.name, pointerName);
+  EXPECT_EQ(arrayTag.name, arrayName);
+  EXPECT_EQ(&namedTag, &existingTag);
+  EXPECT_EQ(namedTag.name, viewName);
 }
 
-void testTagValueOperatorAcceptsNbtValues() {
+TEST(CoreTests, TagValueOperatorAcceptsNbtValues) {
   using namespace nbt::tag_literals;
 
   const std::string name = "value";
@@ -117,335 +148,328 @@ void testTagValueOperatorAcceptsNbtValues() {
   const auto longArrayTag = name | longArrayValue;
   const auto containerTag = name | containerValue;
 
-  check(directViewTag.name == "direct");
-  check(directArrayTag.name == "direct-array");
-  check(byteTag.type == nbt::Type::Byte);
-  check(shortTag.type == nbt::Type::Short);
-  check(intTag.type == nbt::Type::Int);
-  check(longTag.type == nbt::Type::Long);
-  check(floatTag.type == nbt::Type::Float);
-  check(doubleTag.type == nbt::Type::Double);
-  check(stringTag.type == nbt::Type::String);
-  check(byteArrayTag.type == nbt::Type::ByteArray);
-  check(intArrayTag.type == nbt::Type::IntArray);
-  check(longArrayTag.type == nbt::Type::LongArray);
-  check(containerTag.type == nbt::Type::Compound);
+  EXPECT_EQ(directViewTag.name, "direct");
+  EXPECT_EQ(directArrayTag.name, "direct-array");
+  EXPECT_EQ(byteTag.type, nbt::Type::Byte);
+  EXPECT_EQ(shortTag.type, nbt::Type::Short);
+  EXPECT_EQ(intTag.type, nbt::Type::Int);
+  EXPECT_EQ(longTag.type, nbt::Type::Long);
+  EXPECT_EQ(floatTag.type, nbt::Type::Float);
+  EXPECT_EQ(doubleTag.type, nbt::Type::Double);
+  EXPECT_EQ(stringTag.type, nbt::Type::String);
+  EXPECT_EQ(byteArrayTag.type, nbt::Type::ByteArray);
+  EXPECT_EQ(intArrayTag.type, nbt::Type::IntArray);
+  EXPECT_EQ(longArrayTag.type, nbt::Type::LongArray);
+  EXPECT_EQ(containerTag.type, nbt::Type::Compound);
 }
 
-void testCanonicalBytes() {
+TEST(CoreTests, CanonicalBytes) {
   using N = nbt::Nbt;
 
   const auto bytes = N(nbt::Tag("answer", nbt::Tag::Int{42})).encode();
   const std::array expected{
       std::byte{static_cast<unsigned char>(nbt::Type::Int)}, std::byte{0}, std::byte{6}, std::byte{'a'}, std::byte{'n'}, std::byte{'s'}, std::byte{'w'}, std::byte{'e'}, std::byte{'r'}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{42}};
-  check(equalBytes(bytes, expected));
+  EXPECT_TRUE(equalBytes(bytes, expected));
 
-  const auto networkBytes = N(nbt::Tag("", nbt::Tag::Container{})).encode(nbt::Source::Network);
+  const auto networkBytes = N(nbt::Tag("", nbt::Tag::Container{})).encode(false);
   const std::array expectedNetwork{std::byte{static_cast<unsigned char>(nbt::Type::Compound)}, std::byte{0}};
-  check(equalBytes(networkBytes, expectedNetwork));
+  EXPECT_TRUE(equalBytes(networkBytes, expectedNetwork));
 }
 
-void testBorrowedLazyRead() {
+TEST(CoreTests, BorrowedLazyRead) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   const std::span<const std::byte> view(bytes);
   N document = N::parse(view);
-  check(document.complete());
-  check(!document.ownsBytes());
-  check(document.root().name() == "root");
-  check(document.root().payloadBegin() == 0);
-  check(document.root().payloadEnd() == bytes.size());
-  check(document.root().find("answer").as<nbt::Type::Int>() == 42);
-  check(document.root().find("name").as<nbt::Type::String>() == "Alex");
-  check(document.root().find("values").child(1).as<nbt::Type::Int>() == 2);
-  check(equalBytes(document.encode(), bytes));
+  EXPECT_TRUE(document.valid());
+  EXPECT_FALSE(document.ownsBytes());
+  EXPECT_EQ(document.root().name(), "root");
+  EXPECT_EQ(document.root().payloadBegin(), 0);
+  EXPECT_EQ(document.root().payloadEnd(), bytes.size());
+  EXPECT_EQ(document.root().find("answer").as<nbt::Type::Int>(), 42);
+  EXPECT_EQ(document.root().find("name").as<nbt::Type::String>(), "Alex");
+  EXPECT_EQ(document.root().find("values").child(1).as<nbt::Type::Int>(), 2);
+  EXPECT_TRUE(equalBytes(document.encode(), bytes));
 }
 
-void testOwnedRead() {
+TEST(CoreTests, OwnedRead) {
   using N = nbt::Nbt;
   const auto source = N(sample()).encode();
   N document = N::parse(source);
-  check(document.complete());
-  check(document.ownsBytes());
-  check(document.materialize().type == nbt::Type::Compound);
+  EXPECT_TRUE(document.valid());
+  EXPECT_TRUE(document.ownsBytes());
+  EXPECT_EQ(document.materialize().type, nbt::Type::Compound);
 }
 
-void testContinuation() {
+TEST(CoreTests, Continuation) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   const std::span<const std::byte> view(bytes);
-  N borrowed = N::parse(view.first(bytes.size() / 2));
-  check(borrowed.status() == nbt::Status::NeedMoreData);
-  borrowed = N::parse(view);
-  check(borrowed.status() == nbt::Status::Complete);
+  const auto firstSplit = bytes.size() / 3;
+  const auto secondSplit = (bytes.size() * 2) / 3;
 
-  N append;
-  append.append(view.first(view.size() / 2));
-  check(append.status() == nbt::Status::NeedMoreData);
-  append.append(view.subspan(view.size() / 2));
-  check(append.status() == nbt::Status::Complete);
-  check(append.ownsBytes());
+  const std::vector<std::byte> original(bytes.begin(), bytes.end());
+  N borrowed = N::parseAtMost(view.first(firstSplit));
+  EXPECT_EQ(borrowed.status(), nbt::Status::NeedMoreData);
+  EXPECT_FALSE(borrowed.ownsBytes());
+  borrowed.append(view.subspan(firstSplit, secondSplit - firstSplit));
+  EXPECT_EQ(borrowed.status(), nbt::Status::NeedMoreData);
+  EXPECT_TRUE(borrowed.ownsBytes());
+  EXPECT_TRUE(equalBytes(bytes, original));
+  borrowed.append(view.subspan(secondSplit));
+  EXPECT_EQ(borrowed.status(), nbt::Status::Complete);
+  EXPECT_TRUE(equalBytes(borrowed.encode(), bytes));
+  EXPECT_TRUE(equalBytes(bytes, original));
+
+  const std::vector<std::byte> truncated(bytes.begin(), bytes.begin() + firstSplit);
+  N owned = N::parseAtMost(truncated);
+  EXPECT_EQ(owned.status(), nbt::Status::NeedMoreData);
+  EXPECT_TRUE(owned.ownsBytes());
+  EXPECT_TRUE(equalBytes(owned.bytes(), truncated));
+
+  N appended;
+  appended.append(view.first(firstSplit));
+  EXPECT_EQ(appended.status(), nbt::Status::NeedMoreData);
+  EXPECT_TRUE(appended.ownsBytes());
+  appended.append(view.subspan(firstSplit, secondSplit - firstSplit));
+  EXPECT_EQ(appended.status(), nbt::Status::NeedMoreData);
+  appended.append(view.subspan(secondSplit));
+  EXPECT_EQ(appended.status(), nbt::Status::Complete);
+  EXPECT_TRUE(equalBytes(appended.bytes(), bytes));
+  EXPECT_TRUE(equalBytes(appended.encode(), bytes));
 }
 
-void testParserStateAndOptions() {
+TEST(CoreTests, EmptyAppendIsNoOp) {
   using N = nbt::Nbt;
+  const std::span<const std::byte> empty;
 
-  N empty = N::parse(std::span<const std::byte>{});
-  check(empty.status() == nbt::Status::NeedMoreData);
-  check(!empty.complete());
-  bool incompleteRootRejected = false;
-  try {
-    (void)empty.root();
-  } catch (const std::logic_error &) {
-    incompleteRootRejected = true;
-  }
-  check(incompleteRootRejected);
+  N document;
+  document.append(empty);
+  EXPECT_EQ(document.status(), nbt::Status::Empty);
+  EXPECT_FALSE(document.ownsBytes());
+
+  const auto bytes = N(sample()).encode();
+  document = N::parse(bytes);
+  document.append(empty);
+  EXPECT_EQ(document.status(), nbt::Status::Complete);
+  EXPECT_TRUE(equalBytes(document.bytes(), bytes));
+}
+
+TEST(CoreTests, ParserStateAndOptions) {
+  using N = nbt::Nbt;
+  using E = nbt::Exception;
+
+  N empty = N::parseAtMost(std::span<const std::byte>{});
+  EXPECT_EQ(empty.status(), nbt::Status::NeedMoreData);
+  EXPECT_FALSE(empty.valid());
+  EXPECT_THROW((void)empty.root(), std::logic_error);
   empty.clear();
-  check(empty.status() == nbt::Status::Empty);
+  EXPECT_EQ(empty.status(), nbt::Status::Empty);
 
   const auto bytes = N(sample()).encode();
   std::vector<std::byte> trailing(bytes.begin(), bytes.end());
   trailing.push_back(std::byte{0x7f});
-  bool trailingRejected = false;
-  try {
-    (void)N::parse(trailing);
-  } catch (const nbt::Error &error) {
-    trailingRejected = error.offset() == bytes.size();
-  }
-  check(trailingRejected);
-
-  nbt::Options allowTrailing;
-  allowTrailing.requireCompleteInput = false;
-  auto withTrailing = N::parse(trailing, allowTrailing);
-  check(withTrailing.complete());
-  check(withTrailing.bytes().size() == trailing.size());
-  check(equalBytes(withTrailing.encode(), bytes));
+  auto withTrailing = N::parse(trailing);
+  EXPECT_TRUE(withTrailing.valid());
+  EXPECT_EQ(withTrailing.bytes().size(), trailing.size());
+  EXPECT_TRUE(equalBytes(withTrailing.encode(), bytes));
 
   nbt::Options inputLimit;
   inputLimit.maxInputBytes = bytes.size() - 1;
-  bool inputLimitRejected = false;
-  try {
-    (void)N::parse(bytes, inputLimit);
-  } catch (const nbt::Error &) {
-    inputLimitRejected = true;
-  }
-  check(inputLimitRejected);
+  EXPECT_THROW((void)N::parse(bytes, inputLimit), E);
 
   nbt::Options depthLimit;
   depthLimit.maxDepth = 0;
-  bool depthLimitRejected = false;
-  try {
-    (void)N::parse(bytes, depthLimit);
-  } catch (const nbt::Error &) {
-    depthLimitRejected = true;
-  }
-  check(depthLimitRejected);
+  EXPECT_THROW((void)N::parse(bytes, depthLimit), E);
 
   nbt::Options elementLimit;
   elementLimit.maxContainerElements = 1;
-  bool elementLimitRejected = false;
-  try {
-    (void)N::parse(bytes, elementLimit);
-  } catch (const nbt::Error &) {
-    elementLimitRejected = true;
-  }
-  check(elementLimitRejected);
+  EXPECT_THROW((void)N::parse(bytes, elementLimit), E);
 
   nbt::Options nodeLimit;
   nodeLimit.maxTotalNodes = 1;
-  bool nodeLimitRejected = false;
-  try {
-    (void)N::parse(bytes, nodeLimit);
-  } catch (const nbt::Error &) {
-    nodeLimitRejected = true;
-  }
-  check(nodeLimitRejected);
+  EXPECT_THROW((void)N::parse(bytes, nodeLimit), E);
 }
 
-void testScalarAndStringRoundTrips() {
+TEST(CoreTests, ScalarAndStringRoundTrips) {
   using N = nbt::Nbt;
   const std::string embedded{"a\0\xC3\xA9", 4};
   const auto root = nbt::Tag("root",
-                             nbt::Tag::Container{nbt::Tag("byte", nbt::Tag::Byte{-2}),
-                                                 nbt::Tag("short", nbt::Tag::Short{-300}),
-                                                 nbt::Tag("int", nbt::Tag::Int{-70000}),
-                                                 nbt::Tag("long", nbt::Tag::Long{-9000000000LL}),
-                                                 nbt::Tag("float", nbt::Tag::Float{-1.25F}),
-                                                 nbt::Tag("double", nbt::Tag::Double{2.5}),
-                                                 nbt::Tag("text", embedded)});
+                             {nbt::Tag("byte", nbt::Tag::Byte{-2}),
+                              nbt::Tag("short", nbt::Tag::Short{-300}),
+                              nbt::Tag("int", nbt::Tag::Int{-70000}),
+                              nbt::Tag("long", nbt::Tag::Long{-9000000000LL}),
+                              nbt::Tag("float", nbt::Tag::Float{-1.25F}),
+                              nbt::Tag("double", nbt::Tag::Double{2.5}),
+                              nbt::Tag("text", embedded)});
   const auto bytes = N(root).encode();
   const auto document = N::parse(bytes);
   const auto view = document.root();
-  check(view.find("byte").as<nbt::Type::Byte>() == -2);
-  check(view.find("short").as<nbt::Type::Short>() == -300);
-  check(view.find("int").as<nbt::Type::Int>() == -70000);
-  check(view.find("long").as<nbt::Type::Long>() == -9000000000LL);
-  check(view.find("float").as<nbt::Type::Float>() == -1.25F);
-  check(view.find("double").as<nbt::Type::Double>() == 2.5);
-  check(view.find("text").as<nbt::Type::String>() == embedded);
-  check(view.find("text").as<nbt::Type::String>().size() == 4);
-  check(equalBytes(document.encode(), bytes));
+  EXPECT_EQ(view.find("byte").as<nbt::Type::Byte>(), -2);
+  EXPECT_EQ(view.find("short").as<nbt::Type::Short>(), -300);
+  EXPECT_EQ(view.find("int").as<nbt::Type::Int>(), -70000);
+  EXPECT_EQ(view.find("long").as<nbt::Type::Long>(), -9000000000LL);
+  EXPECT_EQ(view.find("float").as<nbt::Type::Float>(), -1.25F);
+  EXPECT_EQ(view.find("double").as<nbt::Type::Double>(), 2.5);
+  EXPECT_EQ(view.find("text").as<nbt::Type::String>(), embedded);
+  EXPECT_EQ(view.find("text").as<nbt::Type::String>().size(), 4);
+  EXPECT_TRUE(equalBytes(document.encode(), bytes));
 }
 
-void testNetworkFormat() {
+TEST(CoreTests, NetworkFormat) {
   using N = nbt::Nbt;
   auto root = sample();
   root.name.clear();
-  const auto bytes = N(root).encode(nbt::Source::Network);
+  const auto bytes = N(root).encode(false);
   nbt::Options options;
-  options.format = nbt::Source::Network;
+  options.named = false;
   N document = N::parse(std::as_bytes(std::span(bytes)), options);
-  check(document.status() == nbt::Status::Complete);
-  check(document.root().type() == nbt::Type::Compound);
+  EXPECT_EQ(document.status(), nbt::Status::Complete);
+  EXPECT_EQ(document.root().type(), nbt::Type::Compound);
 }
 
-void testEveryTruncation() {
+TEST(CoreTests, EveryTruncation) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   for (std::size_t size = 0; size < bytes.size(); ++size) {
-    N document = N::parse(std::as_bytes(std::span(bytes).first(size)));
-    check(document.status() == nbt::Status::NeedMoreData);
+    N document = N::parseAtMost(std::as_bytes(std::span(bytes).first(size)));
+    EXPECT_EQ(document.status(), nbt::Status::NeedMoreData);
   }
 }
 
-void testArrayViews() {
+TEST(CoreTests, ArrayViews) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   N document = N::parse(bytes);
-  check(document.complete());
+  EXPECT_TRUE(document.valid());
 
   const auto scores = document.root().find("scores").as<nbt::Type::IntArray>();
-  check(scores.size() == 3);
-  check(scores[0] == 10);
-  check(scores[1] == 20);
-  check(scores[2] == 30);
+  EXPECT_EQ(scores.size(), 3);
+  EXPECT_EQ(scores[0], 10);
+  EXPECT_EQ(scores[1], 20);
+  EXPECT_EQ(scores[2], 30);
   std::int32_t scoreTotal = 0;
   for (const auto score : scores) {
     scoreTotal += score;
   }
-  check(scoreTotal == 60);
+  EXPECT_EQ(scoreTotal, 60);
 
   const auto big = document.root().find("big").as<nbt::Type::LongArray>();
-  check(big.size() == 2);
-  check(big.front() == 100);
-  check(big.back() == 200);
+  EXPECT_EQ(big.size(), 2);
+  EXPECT_EQ(big.front(), 100);
+  EXPECT_EQ(big.back(), 200);
 
   const auto scoresTag = document.root().find("scores").materialize();
   const auto &scoresVec = std::get<std::vector<nbt::Tag::Int>>(scoresTag.payload);
-  check(scoresVec[2] == 30);
+  EXPECT_EQ(scoresVec[2], 30);
   const auto materializedRoot = document.materialize();
-  check(materializedRoot.name == "root");
-  check(materializedRoot.type == nbt::Type::Compound);
+  EXPECT_EQ(materializedRoot.name, "root");
+  EXPECT_EQ(materializedRoot.type, nbt::Type::Compound);
 }
 
-void testContainerViews() {
+TEST(CoreTests, ContainerViews) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   N document = N::parse(bytes);
-  check(document.complete());
+  EXPECT_TRUE(document.valid());
 
   const auto values = document.root().find("values").as<nbt::Type::List>();
-  check(values.size() == 2);
-  check(values[0].as<nbt::Type::Int>() == 1);
-  check(values[1].as<nbt::Type::Int>() == 2);
+  EXPECT_EQ(values.size(), 2);
+  EXPECT_EQ(values[0].as<nbt::Type::Int>(), 1);
+  EXPECT_EQ(values[1].as<nbt::Type::Int>(), 2);
 
   const auto root = document.root().as<nbt::Type::Compound>();
-  check(root.size() >= 4);
+  EXPECT_GE(root.size(), 4);
   const auto answer = root.find("answer");
-  check(static_cast<bool>(answer));
-  check(answer.as<nbt::Type::Int>() == 42);
-  check(!root.find("missing"));
-  check(!root.child(root.size()));
-  bool wrongTypeRejected = false;
-  try {
-    (void)answer.as<nbt::Type::String>();
-  } catch (const std::bad_variant_access &) {
-    wrongTypeRejected = true;
-  }
-  check(wrongTypeRejected);
+  EXPECT_TRUE(static_cast<bool>(answer));
+  EXPECT_EQ(answer.as<nbt::Type::Int>(), 42);
+  EXPECT_FALSE(root.find("missing"));
+  EXPECT_FALSE(root.child(root.size()));
+  EXPECT_THROW((void)answer.as<nbt::Type::String>(), std::bad_variant_access);
 
   std::size_t count = 0;
   for (const auto child : root) {
     (void)child;
     ++count;
   }
-  check(count == root.size());
+  EXPECT_EQ(count, root.size());
 }
 
-void testEncode() {
+TEST(CoreTests, Encode) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
   N document = N::parse(bytes);
 
   nbt::Buffer buffer;
   document.encode(buffer);
-  check(equalBytes(buffer, bytes));
+  EXPECT_TRUE(equalBytes(buffer, bytes));
 }
 
-void testMalformedInput() {
+TEST(CoreTests, ArrayListsRoundTrip) {
   using N = nbt::Nbt;
-  using E = nbt::Error;
+
+  const auto root = nbt::Tag("root",
+                             nbt::Tag::Container{nbt::Tag("bytes", nbt::Type::ByteArray, {nbt::Tag(nbt::Tag::ByteArray{1, -2})}),
+                                                 nbt::Tag("ints", nbt::Type::IntArray, {nbt::Tag(nbt::Tag::IntArray{3, -4})}),
+                                                 nbt::Tag("longs", nbt::Type::LongArray, {nbt::Tag(nbt::Tag::LongArray{5, -6})})});
+
+  const auto document = N::parse(N(root).encode());
+  EXPECT_EQ(document.root().find("bytes").child(0).as<nbt::Type::ByteArray>().size(), 2);
+  EXPECT_EQ(document.root().find("ints").child(0).as<nbt::Type::IntArray>()[1], -4);
+  EXPECT_EQ(document.root().find("longs").child(0).as<nbt::Type::LongArray>()[1], -6);
+}
+
+TEST(CoreTests, EndListsRequireZeroElements) {
+  using N = nbt::Nbt;
+
+  const auto emptyList = nbt::Tag("empty", nbt::Type::End, {});
+  const auto bytes = N(emptyList).encode();
+  const std::array expected{
+      std::byte{static_cast<unsigned char>(nbt::Type::List)}, std::byte{0}, std::byte{5}, std::byte{'e'}, std::byte{'m'}, std::byte{'p'}, std::byte{'t'}, std::byte{'y'}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+  EXPECT_TRUE(equalBytes(bytes, expected));
+  EXPECT_EQ(N::parse(bytes).root().size(), 0);
+
+  const auto normalizedList = nbt::Tag("normalized", nbt::Type::End, {nbt::Tag{}});
+  EXPECT_TRUE(std::get<nbt::Tag::Container>(normalizedList.payload).empty());
+
+  auto invalidList = emptyList;
+  invalidList.payload = nbt::Tag::Container{nbt::Tag{}};
+  EXPECT_TRUE(equalBytes(N(invalidList).encode(), bytes));
+
+  auto wrongElementType = nbt::Tag("values", nbt::Type::Int, {nbt::Tag(nbt::Tag::Int{1})});
+  std::get<nbt::Tag::Container>(wrongElementType.payload)[0] = nbt::Tag(nbt::Tag::Long{1});
+  const auto skipped = N::parse(N(wrongElementType).encode());
+  EXPECT_EQ(skipped.root().type(), nbt::Type::List);
+  EXPECT_EQ(skipped.root().elementType(), nbt::Type::Int);
+  EXPECT_EQ(skipped.root().size(), 0);
+
+  auto namedElement = nbt::Tag("values", nbt::Type::Int, {nbt::Tag(nbt::Tag::Int{1})});
+  std::get<nbt::Tag::Container>(namedElement.payload)[0].name = "ignored";
+  const auto encoded = N::parse(N(namedElement).encode());
+  EXPECT_EQ(encoded.root().size(), 1);
+  EXPECT_EQ(encoded.root().child(0).as<nbt::Type::Int>(), 1);
+
+  const auto compound = nbt::Tag("root", nbt::Tag::Container{nbt::Tag{}, nbt::Tag("value", nbt::Tag::Int{2})});
+  const auto pruned = N::parse(N(compound).encode());
+  EXPECT_EQ(pruned.root().size(), 1);
+  EXPECT_EQ(pruned.root().find("value").as<nbt::Type::Int>(), 2);
+}
+
+TEST(CoreTests, MalformedInput) {
+  using N = nbt::Nbt;
+  using E = nbt::Exception;
 
   const std::array invalidType{std::byte{0x7f}};
-  bool invalidTypeRejected = false;
-  try {
-    (void)N::parse(invalidType);
-  } catch (const E &error) {
-    invalidTypeRejected = error.offset() == 0;
-  }
-  check(invalidTypeRejected);
+  EXPECT_THROW((void)N::parse(invalidType), E);
 
   const std::array namedEnd{std::byte{0}};
-  bool namedEndRejected = false;
-  try {
-    (void)N::parse(namedEnd);
-  } catch (const E &error) {
-    namedEndRejected = error.offset() == 0;
-  }
-  check(namedEndRejected);
+  EXPECT_THROW((void)N::parse(namedEnd), E);
 
   const std::array negativeArrayLength{std::byte{static_cast<unsigned char>(nbt::Type::ByteArray)}, std::byte{0}, std::byte{0}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-  bool negativeLengthRejected = false;
-  try {
-    (void)N::parse(negativeArrayLength);
-  } catch (const E &error) {
-    negativeLengthRejected = error.offset() == 3;
-  }
-  check(negativeLengthRejected);
+  EXPECT_THROW((void)N::parse(negativeArrayLength), E);
 
   auto scalar = N(nbt::Tag("value", nbt::Tag::Int{1}));
   nbt::Options network;
-  network.format = nbt::Source::Network;
-  bool networkRootRejected = false;
-  try {
-    (void)N::parse(scalar.encode(), network);
-  } catch (const E &error) {
-    networkRootRejected = error.offset() == 0;
-  }
-  check(networkRootRejected);
-}
-
-} // namespace
-
-int main() {
-  try {
-    testBufferPrimitives();
-    testTagNameOperatorAcceptsStringTypes();
-    testTagValueOperatorAcceptsNbtValues();
-    testCanonicalBytes();
-    testBorrowedLazyRead();
-    testOwnedRead();
-    testContinuation();
-    testParserStateAndOptions();
-    testScalarAndStringRoundTrips();
-    testNetworkFormat();
-    testEveryTruncation();
-    testArrayViews();
-    testContainerViews();
-    testEncode();
-    testMalformedInput();
-  } catch (...) {
-    return 1;
-  }
-  return 0;
+  network.named = false;
+  EXPECT_THROW((void)N::parse(scalar.encode(), network), E);
 }

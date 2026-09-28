@@ -12,5 +12,5 @@ Checks: >
   -readability-magic-numbers,
   -readability-convert-member-functions-to-static
 WarningsAsErrors: ""
-HeaderFilterRegex: ".*nbt.*\\.hpp"
+HeaderFilterRegex: ".*nbt.*\\.h"
 FormatStyle: file

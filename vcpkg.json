@@ -5,6 +5,8 @@
   "homepage": "https://github.com/cmachacacordova/nbt-cpp",
   "license": "MIT",
   "dependencies": [
-    "zlib"
+    "zlib",
+    "zstr",
+    "gtest"
   ]
 }

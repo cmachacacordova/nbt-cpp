@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
@@ -18,17 +19,33 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <ostream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "nbt/buffer.h"
 #include "nbt/nbt.h"
 
 #include "zlib.h"
+#include "zstr.hpp"
 
 namespace nbt {
+
+class UtilException : public nbt::BaseException, public std::runtime_error {
+public:
+  UtilException(const std::string &what) : BaseException(0), std::runtime_error(what) {
+  }
+
+  UtilException(const std::string &what, const std::exception &cause) : BaseException(0, std::make_exception_ptr(cause)), std::runtime_error(what) {
+  }
+
+  UtilException(const std::string &what, const std::exception_ptr &cause) : BaseException(0, cause), std::runtime_error(what) {
+  }
+};
 
 class NbtUtilities final {
 public:
@@ -40,6 +57,9 @@ public:
   }
 
   [[nodiscard]] static nbt::Tag parseSnbt(std::string_view input, const nbt::Options &options) {
+    if (input.size() > options.maxInputBytes) {
+      throw nbt::Exception("SNBT input byte limit exceeded", 0);
+    }
     SnbtReader reader(input, options);
     auto value = reader.readValue({});
     reader.skipWhitespace();
@@ -56,44 +76,105 @@ public:
   }
 
   template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path) {
+  [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path) {
     nbt::Options options;
-    return load(path, Compression::Auto, options);
+    return parseFile(path, Compression::Auto, options);
   }
 
   template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path, Compression compression) {
+  [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path, Compression compression) {
     nbt::Options options;
-    return load(path, compression, options);
+    return parseFile(path, compression, options);
   }
 
   template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static nbt::NbtParser<BufferT> load(const std::filesystem::path &path, Compression compression, const nbt::Options &options) {
-    auto bytes = readFile<BufferT>(path);
-    const auto resolved = compression == Compression::Auto ? detectCompression(bytes) : compression;
-    if (resolved != Compression::None) {
-      bytes = inflate(bytes, resolved);
+  [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path, Compression compression, const nbt::Options &options) {
+    BufferT buf;
+
+    const auto filename = path.string();
+
+    try {
+      std::unique_ptr<std::istream> input;
+      if (compression == Compression::None) {
+        input = std::make_unique<std::ifstream>(filename, std::ios::in | std::ios::binary);
+      } else {
+        input = std::make_unique<zstr::ifstream>(filename, std::ios::in | std::ios::binary);
+      }
+
+      if (input->fail()) {
+        throw nbt::UtilException("cannot open NBT file");
+      }
+
+      constexpr std::size_t chunkSize = 1 << 16;
+      std::array<char, chunkSize> buffer;
+
+      while (input->read(buffer.data(), static_cast<std::streamsize>(buffer.size()))) {
+        const auto bytesRead = input->gcount();
+        if (bytesRead > 0) {
+          buf.append(reinterpret_cast<const std::byte *>(buffer.data()), reinterpret_cast<const std::byte *>(buffer.data() + bytesRead));
+        }
+      }
+
+      if (input->bad()) {
+        throw nbt::UtilException("cannot read NBT file");
+      }
+    } catch (const std::ios_base::failure &e) {
+      throw nbt::UtilException(e.what(), e);
+    } catch (const strict_fstream::Exception &e) {
+      throw nbt::UtilException(e.what(), e);
     }
-    Nbt document = nbt::NbtParser<BufferT>::parse(bytes, options);
-    if (!document.complete()) [[unlikely]] {
-      throw nbt::Error("truncated NBT file", bytes.size());
-    }
+
+    nbt::NbtParser<BufferT> document(buf);
+    document.setMaxDepth(options.maxDepth);
+    document.setMaxContainerElements(options.maxContainerElements);
+    document.setMaxTotalNodes(options.maxTotalNodes);
+    document.setMaxInputBytes(options.maxInputBytes);
+    document.validate(false, options.named);
     return document;
   }
 
   template <typename BufferT = nbt::Buffer>
-  static void save(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, nbt::Source format = nbt::Source::File, int level = Z_DEFAULT_COMPRESSION) {
+  static void saveFile(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, bool named = true, int level = Z_DEFAULT_COMPRESSION) {
     if (compression == Compression::Auto) {
       throw std::invalid_argument("Auto compression is invalid for output");
     }
-    const auto encoded = document.encode(format);
-    std::span<const std::byte> bytes{encoded.data(), encoded.size()};
-    BufferT compressed;
-    if (compression != Compression::None) {
-      compressed = deflate(bytes, compression, level);
-      bytes = std::span<const std::byte>{compressed.data(), compressed.size()};
+    const auto encoded = document.encode(named);
+    const auto filename = path.string();
+
+    try {
+
+      std::unique_ptr<strict_fstream::ofstream> file;
+      std::unique_ptr<zstr::ostreambuf> buffer;
+      std::unique_ptr<std::ostream> output;
+
+      if (compression == Compression::None) {
+        output = std::make_unique<std::ofstream>(filename, std::ios::out | std::ios::binary);
+      } else {
+        file = std::make_unique<strict_fstream::ofstream>(filename, std::ios::out | std::ios::binary);
+        buffer = std::make_unique<zstr::ostreambuf>(file->rdbuf(), zstr::default_buff_size, level, compression == Compression::Gzip ? 31 : 15);
+        output = std::make_unique<std::ostream>(buffer.get());
+      }
+
+      if (output->fail()) {
+        throw nbt::UtilException("cannot open NBT file");
+      }
+
+      output->write(reinterpret_cast<const char *>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+      output->flush();
+      if (file != nullptr) {
+        file->flush();
+        if (file->fail()) {
+          throw nbt::UtilException("cannot write NBT file");
+        }
+      }
+      if (output->fail()) {
+        throw nbt::UtilException("cannot write NBT file");
+      }
+    } catch (const std::ios_base::failure &e) {
+      throw nbt::UtilException(e.what(), e);
+    } catch (const strict_fstream::Exception &e) {
+      throw nbt::UtilException(e.what(), e);
     }
-    writeFile(path, bytes);
   }
 
 private:
@@ -106,6 +187,10 @@ private:
       if (depth > options_.maxDepth) {
         fail("SNBT depth limit exceeded");
       }
+      if (totalNodes_ >= options_.maxTotalNodes) {
+        fail("SNBT node limit exceeded");
+      }
+      ++totalNodes_;
       skipWhitespace();
       if (finished()) {
         fail("expected SNBT value");
@@ -133,7 +218,7 @@ private:
     }
 
     [[noreturn]] void fail(const std::string &message) const {
-      throw nbt::Error(message, position_);
+      throw nbt::Exception(message, position_);
     }
 
   private:
@@ -349,6 +434,7 @@ private:
     std::string_view input_;
     const nbt::Options &options_;
     std::size_t position_{};
+    std::size_t totalNodes_{};
   };
 
   static void appendIndent(std::string &output, std::size_t depth) {
@@ -461,109 +547,6 @@ private:
       appendNumber(output, values[index], suffix);
     }
     output.push_back(']');
-  }
-
-  template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static BufferT readFile(const std::filesystem::path &path) {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) {
-      throw std::runtime_error("cannot open NBT file");
-    }
-    const auto end = input.tellg();
-    if (end < 0) {
-      throw std::runtime_error("cannot determine NBT file size");
-    }
-    const auto size = static_cast<std::size_t>(end);
-    input.seekg(0);
-    BufferT bytes;
-    if (size > 0) {
-      auto [buffer, available] = bytes.preallocate(size, size);
-      if (buffer == nullptr) {
-        throw std::bad_alloc{};
-      }
-      input.read(reinterpret_cast<char *>(buffer), static_cast<std::streamsize>(size));
-      if (input.fail()) [[unlikely]] {
-        throw std::runtime_error("cannot read NBT file");
-      }
-      bytes.postallocate(size);
-    }
-    return bytes;
-  }
-
-  static void writeFile(const std::filesystem::path &path, std::span<const std::byte> bytes) {
-    std::ofstream output(path, std::ios::binary);
-    output.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!output) {
-      throw std::runtime_error("cannot write NBT file");
-    }
-  }
-
-  [[nodiscard]] static Compression detectCompression(std::span<const std::byte> bytes) {
-    if (bytes.size() >= 2 && bytes[0] == std::byte{0x1f} && bytes[1] == std::byte{0x8b}) {
-      return Compression::Gzip;
-    }
-    if (bytes.size() >= 2) {
-      const auto header = (std::to_integer<unsigned>(bytes[0]) << 8) | std::to_integer<unsigned>(bytes[1]);
-      if ((header & 0x0f00U) == 0x0800U && header % 31U == 0) {
-        return Compression::Zlib;
-      }
-    }
-    return Compression::None;
-  }
-
-  template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static BufferT inflate(std::span<const std::byte> input, Compression compression) {
-    z_stream stream{};
-    const auto windowBits = compression == Compression::Gzip ? 15 + 16 : 15;
-    if (inflateInit2(&stream, windowBits) != Z_OK) {
-      throw std::runtime_error("zlib init failed");
-    }
-    stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(input.data()));
-    stream.avail_in = static_cast<uInt>(input.size());
-    BufferT output;
-    std::array<std::byte, 64 * 1024> buffer{};
-    int result{};
-    do {
-      stream.next_out = reinterpret_cast<Bytef *>(buffer.data());
-      stream.avail_out = static_cast<uInt>(buffer.size());
-      result = ::inflate(&stream, Z_NO_FLUSH);
-      if (result != Z_OK && result != Z_STREAM_END) {
-        inflateEnd(&stream);
-        throw std::runtime_error("invalid compressed NBT data");
-      }
-      const auto *producedEnd = buffer.data() + (buffer.size() - stream.avail_out);
-      output.append(buffer.data(), producedEnd);
-    } while (result != Z_STREAM_END);
-    inflateEnd(&stream);
-    return output;
-  }
-
-  template <typename BufferT = nbt::Buffer>
-  [[nodiscard]] static BufferT deflate(std::span<const std::byte> input, Compression compression, int level) {
-    z_stream stream{};
-    const auto windowBits = compression == Compression::Gzip ? 15 + 16 : 15;
-    if (deflateInit2(&stream, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-      throw std::runtime_error("zlib init failed");
-    }
-    stream.next_in = reinterpret_cast<Bytef *>(const_cast<std::byte *>(input.data()));
-    stream.avail_in = static_cast<uInt>(input.size());
-    BufferT output;
-    std::array<std::byte, 64 * 1024> buffer{};
-    int result{};
-    do {
-      stream.next_out = reinterpret_cast<Bytef *>(buffer.data());
-      stream.avail_out = static_cast<uInt>(buffer.size());
-      result = ::deflate(&stream, Z_FINISH);
-      if (result != Z_OK && result != Z_STREAM_END) {
-        deflateEnd(&stream);
-        throw std::runtime_error("cannot compress NBT data");
-      }
-      const auto *producedBegin = buffer.data();
-      const auto *producedEnd = producedBegin + (buffer.size() - stream.avail_out);
-      output.append(producedBegin, producedEnd);
-    } while (result != Z_STREAM_END);
-    deflateEnd(&stream);
-    return output;
   }
 };
 

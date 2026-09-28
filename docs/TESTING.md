@@ -1,85 +1,85 @@
-# Testing y compatibilidad
+# Testing and compatibility
 
-## Alcance
+## Scope
 
-`nbt-cpp` implementa NBT binario de Minecraft Java Edition. Los bytes Java NBT son big-endian y pueden aparecer como NBT de archivo (`nbt::Source::File`) o como NBT de red (`nbt::Source::Network`).
+`nbt-cpp` implements binary NBT for Minecraft Java Edition. Java NBT uses big-endian byte order and may appear as file NBT (`nbt::Source::File`) or network NBT (`nbt::Source::Network`).
 
-La biblioteca no implementa Bedrock NBT little-endian, Bedrock network/VarInt NBT ni formatos privados de herramientas externas. Esos formatos no deben tratarse como compatibles ni usarse como fixtures positivos.
+The library does not implement little-endian Bedrock NBT, Bedrock network/VarInt NBT, or private formats used by external tools. Those formats must not be treated as compatible or used as positive fixtures.
 
-Las pruebas validan comportamiento observable mediante la API pública, no detalles internos. Las áreas cubiertas y previstas son:
+Tests validate observable behavior through the public API rather than implementation details. Current and planned coverage includes:
 
-- Construcción de `Tag`, literales, nombres string-like y valores convertibles a `Tag`.
-- Codificación, parseo, materialización y round-trip de todos los tipos NBT.
-- Formatos File y Network.
-- Entrada prestada, entrada propia y acumulación con `append`.
-- Vistas lazy, iteración, arrays y ciclo de vida de documentos y vistas.
-- SNBT, filesystem y compresión None, Gzip y Zlib.
-- Truncamientos, entradas malformadas, offsets de error y límites de recursos.
-- Fixtures canónicos, interoperabilidad, datos reales de Minecraft, fuzzing y rendimiento a medida que se incorporen.
+- `Tag` construction, literals, string-like names, and values convertible to `Tag`.
+- Encoding, parsing, materialization, and round trips for every NBT type.
+- File and Network formats.
+- Borrowed input, owned input, and incremental accumulation with `append`.
+- Lazy views, iteration, arrays, and document/view lifetimes.
+- SNBT, filesystem access, and None, Gzip, and Zlib compression.
+- Truncated and malformed input, error offsets, and resource limits.
+- Canonical fixtures, interoperability, real Minecraft data, fuzzing, and performance as they are added.
 
-## Organización actual
+## Current organization
 
-- `tests/nbt_tests.cpp`: tests del codec core sin ZLIB.
-- `tests/utilities_tests.cpp`: tests de SNBT, filesystem y compresión; solo se compila con `NBT_CPP_BUILD_UTILITIES=ON`.
-- `examples/`: programas autónomos que muestran usos de la biblioteca. Se compilan, pero no se registran como tests de CTest.
-- `nbt-cpp-core-tests`: test CTest con etiquetas `core;codec`.
-- `nbt-cpp-utilities-tests`: test CTest con etiquetas `utilities;io`, cuando utilities está habilitado.
+- `tests/nbt_tests.cpp`: core codec tests without ZLIB.
+- `tests/utilities_tests.cpp`: SNBT, filesystem, and compression tests; built only with `NBT_CPP_BUILD_UTILITIES=ON`.
+- `examples/`: standalone programs that demonstrate library usage. They are built but are not registered as CTest tests.
+- Discovered core tests use the `core.` prefix and the `core;codec` labels.
+- Discovered utility tests use the `utilities.` prefix and the `utilities;io` labels when utilities are enabled.
 
-El arnés actual es un ejecutable dependency-free que comunica el resultado mediante el código de salida. La adopción futura de GoogleTest es opcional y no debe convertir ZLIB ni otra dependencia en requisito del target core.
+The test suites use GoogleTest and `gtest_discover_tests`. GoogleTest is a test-only dependency and is not linked by the core `nbt::nbt` target. ZLIB remains optional and is required only by the utilities target and test suite.
 
-## Matriz de valores
+## Value matrix
 
-Cada operación aplicable debe probar, como mínimo:
+Each applicable operation should test at least:
 
-- `Byte`, `Short`, `Int` y `Long`: límites, negativos, cero y positivos.
-- `Float` y `Double`: ceros con signo, finitos extremos, subnormales, infinitos y NaN cuando la operación los admite.
-- `String`: vacía, ASCII, UTF-8, NUL embebido y límites medidos en bytes.
-- `ByteArray`, `IntArray` y `LongArray`: vacío, un elemento, límites y tamaños mayores.
-- `List` y `Compound`: vacío, un elemento, anidamiento, muchos hijos, nombres repetidos y tipos válidos.
-- `End`: terminador válido y aparición ilegal como tag normal.
+- `Byte`, `Short`, `Int`, and `Long`: limits, negative values, zero, and positive values.
+- `Float` and `Double`: signed zero, extreme finite values, subnormal values, infinity, and NaN when supported by the operation.
+- `String`: empty, ASCII, UTF-8, embedded NUL, and byte-length boundaries.
+- `ByteArray`, `IntArray`, and `LongArray`: empty, one element, boundary values, and larger sizes.
+- `List` and `Compound`: empty, one element, nesting, many children, duplicate names, and valid types.
+- `End`: a valid terminator and illegal appearances as a normal tag.
 
-Los floats se comparan por representación cuando el contrato exige preservar bits, incluyendo el signo de cero y el tratamiento de NaN.
+Floating-point values should be compared by representation when the contract requires bit preservation, including the sign of zero and NaN handling.
 
-## Reglas para nuevos tests
+## Rules for new tests
 
-1. Probar una capacidad pública y observable, no campos o funciones privadas.
-2. Preferir ciclos de integración `Tag -> encode -> parse -> View -> materialize` y `bytes -> parse -> encode`.
-3. Mantener separados los tests del core y de utilities.
-4. Usar vectores golden independientes cuando se comprueben bytes exactos.
-5. Para entradas truncadas, probar cada punto de corte relevante y distinguir `NeedMoreData` de `Error`.
-6. Para límites, probar `limit - 1`, `limit` y `limit + 1` cuando sea aplicable.
-7. Los tests que creen archivos temporales deben limpiarlos y no depender de un directorio del repositorio.
-8. Los ejemplos no deben usarse como sustituto de tests ni añadirse a CTest solo para verificar que compilan.
+1. Test public, observable behavior rather than private fields or functions.
+2. Prefer integration paths such as `Tag -> encode -> parse -> View -> materialize` and `bytes -> parse -> encode`.
+3. Keep core and utilities tests separate.
+4. Use independent golden vectors when checking exact bytes.
+5. Test every relevant cut point for truncated input and distinguish `NeedMoreData` from malformed-input errors.
+6. For limits, test `limit - 1`, `limit`, and `limit + 1` where applicable.
+7. Tests that create temporary files must remove them and must not depend on a repository directory.
+8. Do not use examples as substitutes for tests or register example executables with CTest merely to verify that they compile.
 
-## Infraestructura y compatibilidad
+## Infrastructure and compatibility
 
-Las configuraciones mínimas que deben verificarse son:
+The minimum configurations to verify are:
 
-- Utilities ON y OFF.
-- Debug y Release.
-- MSVC con `/W4 /permissive-`; en otros compiladores, warnings estrictos equivalentes.
+- Utilities ON and OFF.
+- Debug and Release.
+- MSVC with `/W4 /permissive-`; equivalent strict warnings on other compilers.
 - `git diff --check`.
 
-La compatibilidad instalada debe probarse además con un consumidor que use `find_package(nbt-cpp CONFIG REQUIRED)`, enlace `nbt::nbt`, y repita el caso con `nbt::utilities` cuando ZLIB esté habilitado.
+Installed-package compatibility should also be tested with a consumer that calls `find_package(nbt-cpp CONFIG REQUIRED)` and links `nbt::nbt`. Repeat the check with `nbt::utilities` when ZLIB is enabled.
 
-## Decisiones pendientes
+## Open decisions
 
-Antes de fijar nuevos vectores de conformidad deben documentarse explícitamente:
+Before adding new conformance vectors, explicitly document:
 
-- La nomenclatura pública `Source` frente a cualquier nombre alternativo como `Format`.
-- La ausencia actual de `encodeView()`; no documentar ni probar una API que no existe.
-- Política para UTF-8 inválido.
-- Preservación de NaN y valores no finitos en SNBT.
-- Gzip concatenado.
-- Semántica de `append` después de `Status::Complete`.
-- Política de bytes finales cuando `requireCompleteInput` está deshabilitado.
-- Alcance explícito de Bedrock.
+- The public `Source` name versus alternatives such as `Format`.
+- The current absence of `encodeView()`; do not document or test an API that does not exist.
+- The policy for invalid UTF-8.
+- Preservation of NaN and non-finite values in SNBT.
+- Concatenated Gzip members.
+- The semantics of `append` after `Status::Complete`.
+- The trailing-byte policy: trailing bytes are accepted and retained in `document.bytes()`; `encode()` emits only the valid NBT portion.
+- The explicit Bedrock compatibility boundary.
 
 ## Roadmap
 
-1. Consolidar helpers y vectores canónicos sin introducir dependencias obligatorias.
-2. Completar conformance de todos los tipos, File/Network, borrowed/owned y round-trips.
-3. Ampliar streaming, vistas, errores y límites.
-4. Completar SNBT e I/O, incluyendo fallos de filesystem y compresión.
-5. Incorporar fixtures reales de Minecraft y un corpus de interoperabilidad reproducible.
-6. Añadir fuzz smoke tests, sanitizers y benchmarks fuera de los umbrales funcionales estrictos de CI.
+1. Consolidate helpers and canonical vectors without introducing mandatory dependencies.
+2. Complete conformance coverage for every type, File/Network formats, borrowed/owned input, and round trips.
+3. Expand streaming, view, error, and limit coverage.
+4. Complete SNBT and I/O coverage, including filesystem and compression failures.
+5. Add real Minecraft fixtures and a reproducible interoperability corpus.
+6. Add fuzz smoke tests, sanitizers, and benchmarks outside strict functional CI thresholds.

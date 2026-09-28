@@ -188,12 +188,16 @@ Payload breakdown:
 
 The payload contains: element type `u8`, length `i32`, and then each element's payload with no type or name.
 
+The element type byte is always present, even when the list contains no elements. Reading it is the only way to know what type the list is intended to hold.
+
 An empty list conventionally uses `TAG_End` as its element type:
 
 | | Element Type | Length |
 |---|---|---|
 | **Decoded** | `TAG_End` | 0 |
 | **Data** | `00` | `00 00 00 00` |
+
+The original Notchian implementation writes `TAG_End` for empty lists. Some later Mojang implementations write `TAG_Byte` (or the type the list would hold if it had elements) instead. Because a length of `0` means no element payloads follow, a parser should accept any element type when the list length is `0` or negative.
 
 ---
 

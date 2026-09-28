@@ -13,7 +13,7 @@
 
 ## Public API
 
-- Namespace-level types: `nbt::Type`, `nbt::Source`, `nbt::Status`, `nbt::Options`, `nbt::Error`, `nbt::Tag`, `nbt::Buffer` and `nbt::Nbt`.
+- Namespace-level types: `nbt::Type`, `nbt::Source`, `nbt::Status`, `nbt::Options`, `nbt::Exception`, `nbt::Tag`, `nbt::Buffer` and `nbt::Nbt`.
 - Parse borrowed bytes without copying: `Nbt::parse(std::span<const std::byte>, options)`.
 - Parse a contiguous container by copying it into the internal buffer: `Nbt::parse(container, options)`.
 - Accumulate owned fragments with `document.append(chunk, options)`; there is no separate `feed` API.
@@ -28,11 +28,11 @@
 
 - Opening binary NBT validates and indexes the complete structure without decoding values into an owning tree.
 - `Status::Empty` is the default state; empty input and truncated input produce `Status::NeedMoreData`; successful validation produces `Status::Complete`.
-- Malformed input throws `nbt::Error`; inspect `Error::offset()` for the reported byte offset.
-- `Options::requireCompleteInput` defaults to `true` and rejects trailing bytes when validation succeeds structurally.
+- Malformed input throws `nbt::Exception`; inspect `Exception::offset()` for the reported byte offset.
 - `Options` limits are `maxDepth`, `maxContainerElements`, `maxTotalNodes` and `maxInputBytes`.
+- Trailing bytes beyond the validated root are accepted and retained in `document.bytes()`; `document.encode()` writes only the valid NBT portion.
 - File format is the default: one named root tag.
-- Network format is selected with `options.format = nbt::Source::Network` and requires an unnamed `TAG_Compound` root.
+- Network format is selected by passing `nbt::Source::Network` to `parse`/`encode` and requires an unnamed `TAG_Compound` root.
 - `append` copies each fragment into `Buffer`, revalidates the accumulated input and owns the resulting bytes.
 - `parse(span)` borrows the caller's bytes and does not extend their lifetime; documents and views must not outlive or move away from the source/document they reference.
 - The structural index stores offsets and node links, not pointers into individual values.
@@ -52,7 +52,7 @@
 
 - `NbtUtilities::parseSnbt(string, options)` returns an owning `Tag`.
 - `NbtUtilities::toSnbt(tag, pretty)` serializes an owning tag.
-- `NbtUtilities::load(path, compression, options)` reads an NBT file, optionally inflates gzip or zlib data, then validates it.
+- `NbtUtilities::parseFile(path, compression, options)` reads an NBT file, optionally inflates gzip or zlib data, then validates it.
 - `NbtUtilities::save(path, document, compression, source, level)` encodes and optionally compresses a document. `Compression::Auto` is invalid for output.
 - The utilities header includes `<zlib.h>` and must remain optional from the core target.
 
@@ -73,8 +73,8 @@ Run `git diff --check` before completing changes. Do not modify unrelated workin
 - `tests/nbt_tests.cpp` contains core codec tests and does not include optional ZLIB utilities.
 - `tests/utilities_tests.cpp` contains SNBT, filesystem and compression tests and is built only when `NBT_CPP_BUILD_UTILITIES` is enabled.
 - Examples under `examples/` are standalone usage programs. They must be built when `NBT_CPP_BUILD_EXAMPLES` is enabled, but must not be registered as CTest tests.
-- CTest names are `nbt-cpp-core-tests` and, with utilities enabled, `nbt-cpp-utilities-tests`.
-- The dependency-free test harness currently uses executable exit status rather than GoogleTest; keep the public-behavior focus from `docs/TESTING.md` when expanding it.
+- CTest discovers individual GoogleTest cases with prefixes `core.` and, with utilities enabled, `utilities.`.
+- Tests use GoogleTest with `gtest_discover_tests`; keep the public-behavior focus from `docs/TESTING.md` when expanding them. GoogleTest is test-only and is not linked into the core library target.
 
 ## Tag construction and named values
 

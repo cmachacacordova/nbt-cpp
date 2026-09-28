@@ -5,6 +5,10 @@ option(NBT_CPP_BUILD_TESTS "Build nbt-cpp tests" ON)
 option(NBT_CPP_BUILD_EXAMPLES "Build nbt-cpp examples" ON)
 option(NBT_CPP_BUILD_UTILITIES "Expose SNBT, filesystem and compression utilities" ON)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/endianness")
+include(DetectHostEndianness)
+nbt_detect_host_endianness(NBT_BIG_ENDIAN)
+
 add_library(nbt-cpp INTERFACE)
 add_library(nbt::nbt ALIAS nbt-cpp)
 set_target_properties(nbt-cpp PROPERTIES EXPORT_NAME nbt)
@@ -13,26 +17,39 @@ target_include_directories(nbt-cpp INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
+if (NBT_BIG_ENDIAN)
+target_compile_definitions(nbt-cpp INTERFACE NBT_BIG_ENDIAN=${NBT_BIG_ENDIAN})
+endif()
+
 if(NBT_CPP_BUILD_UTILITIES)
-    find_package(ZLIB REQUIRED)
     add_library(nbt-cpp-utilities INTERFACE)
     add_library(nbt::utilities ALIAS nbt-cpp-utilities)
     set_target_properties(nbt-cpp-utilities PROPERTIES EXPORT_NAME utilities)
+
+    find_package(ZLIB REQUIRED)
     target_link_libraries(nbt-cpp-utilities INTERFACE nbt-cpp ZLIB::ZLIB)
+
+    find_path(ZSTR_INCLUDE_DIRS "zstr.hpp")
+    target_include_directories(nbt-cpp-utilities INTERFACE $<BUILD_INTERFACE:${ZSTR_INCLUDE_DIRS}>)
 endif()
 
 if(NBT_CPP_BUILD_TESTS)
     enable_testing()
+    find_package(GTest CONFIG REQUIRED)
+    include(GoogleTest)
+
     add_executable(nbt-cpp-tests tests/nbt_tests.cpp)
-    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt)
-    add_test(NAME nbt-cpp-core-tests COMMAND nbt-cpp-tests)
-    set_tests_properties(nbt-cpp-core-tests PROPERTIES LABELS "core;codec")
+    target_link_libraries(nbt-cpp-tests PRIVATE nbt::nbt GTest::gtest_main)
+    gtest_discover_tests(nbt-cpp-tests
+        TEST_PREFIX "core."
+        PROPERTIES LABELS "core;codec")
 
     if(NBT_CPP_BUILD_UTILITIES)
         add_executable(nbt-cpp-utilities-tests tests/utilities_tests.cpp)
-        target_link_libraries(nbt-cpp-utilities-tests PRIVATE nbt::utilities)
-        add_test(NAME nbt-cpp-utilities-tests COMMAND nbt-cpp-utilities-tests)
-        set_tests_properties(nbt-cpp-utilities-tests PROPERTIES LABELS "utilities;io")
+        target_link_libraries(nbt-cpp-utilities-tests PRIVATE nbt::utilities GTest::gtest_main)
+        gtest_discover_tests(nbt-cpp-utilities-tests
+            TEST_PREFIX "utilities."
+            PROPERTIES LABELS "utilities;io")
     endif()
 
     if(MSVC)

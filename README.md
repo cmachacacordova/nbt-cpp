@@ -6,6 +6,7 @@
 
 - C++23 compiler.
 - No required third-party dependency for the binary codec.
+- GoogleTest is required only when building the test suites.
 - ZLIB is required only when building the optional utilities target.
 
 ## Integration
@@ -85,16 +86,14 @@ if (document.complete()) {
 }
 ```
 
-An empty parser has `Status::Empty`. Truncated input has `Status::NeedMoreData`; malformed input throws `nbt::Error`, whose `offset()` identifies the byte position when available. `clear()` resets the document to `Status::Empty`.
+An empty parser has `Status::Empty`. Truncated input has `Status::NeedMoreData`; malformed input throws `nbt::Exception`, whose `offset()` identifies the byte position when available. `clear()` resets the document to `Status::Empty`.
 
 ## File and network formats
 
-File NBT is the default and contains one named root tag. Network NBT contains an unnamed `TAG_Compound` root. Select the network format through `nbt::Options` when parsing:
+File NBT is the default and contains one named root tag. Network NBT contains an unnamed `TAG_Compound` root. Select the network format by passing `nbt::Source::Network` when parsing:
 
 ```cpp
-nbt::Options options;
-options.format = nbt::Source::Network;
-nbt::Nbt document = nbt::Nbt::parse(packetBytes, options);
+nbt::Nbt document = nbt::Nbt::parse(packetBytes, nbt::Source::Network);
 ```
 
 The same format can be selected when encoding:
@@ -103,7 +102,7 @@ The same format can be selected when encoding:
 auto networkBytes = document.encode(nbt::Source::Network);
 ```
 
-The parser also applies configurable safety limits through `Options`: maximum depth, container elements, total nodes and input bytes. `requireCompleteInput` rejects trailing bytes when enabled (the default).
+The parser applies configurable safety limits through `Options`: maximum depth, container elements, total nodes and input bytes. Trailing bytes beyond the validated root are accepted and retained in `document.bytes()`; `document.encode()` writes only the valid NBT portion.
 
 ## Lazy views and materialization
 
@@ -159,7 +158,7 @@ using Utilities = nbt::NbtUtilities;
 auto value = Utilities::parseSnbt("{health:20}");
 auto text = Utilities::toSnbt(value, true);
 
-auto document = Utilities::load("level.dat");
+auto document = Utilities::parseFile("level.dat");
 Utilities::save("copy.dat", document, Utilities::Compression::Gzip);
 ```
 

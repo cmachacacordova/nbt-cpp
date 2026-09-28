@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -14,7 +15,16 @@ namespace nbt {
 namespace BufferUtils {
 
 [[nodiscard]] std::size_t growthSize(std::size_t needed) noexcept {
-  return ((needed / 64) + 1) * 64;
+  constexpr std::size_t blockSize = 64;
+  const auto remainder = needed % blockSize;
+  if (remainder == 0) {
+    return needed;
+  }
+  const auto increment = blockSize - remainder;
+  if (needed > std::numeric_limits<std::size_t>::max() - increment) {
+    return std::numeric_limits<std::size_t>::max();
+  }
+  return needed + increment;
 }
 
 } // namespace BufferUtils
@@ -55,6 +65,15 @@ public:
   Buffer(std::span<const std::byte> view) : data_{const_cast<std::byte *>(view.data())}, size_{view.size_bytes()} {
   }
 
+  Buffer &operator=(std::span<const std::byte> &other) noexcept {
+    if (this->data_ != other.data()) {
+      reset();
+      data_ = const_cast<std::byte *>(other.data());
+      size_ = other.size_bytes();
+    }
+    return *this;
+  }
+
   explicit Buffer(std::size_t capacity) {
     const auto initial = std::max<std::size_t>(64, capacity);
     data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, initial);
@@ -62,22 +81,31 @@ public:
   }
 
   std::pair<void *, std::size_t> preallocate(std::size_t min, std::size_t newAllocationSize = 64, std::size_t max = std::numeric_limits<std::size_t>::max()) {
-    const auto tailroom = capacity_ - size_;
-    if (min <= tailroom) {
-      return {data_ + size_, std::min(max, tailroom)};
-    }
-
-    if (capacity_ >= max) {
+    const auto allocatorMax = std::allocator_traits<std::allocator<std::byte>>::max_size(byteAlloc);
+    const auto effectiveMax = std::min(max, allocatorMax);
+    if (min == 0 || size_ > effectiveMax || min > effectiveMax - size_) {
       return {nullptr, 0};
     }
 
-    const auto additional = std::max(min, newAllocationSize);
-    if (additional > max - capacity_) {
+    const auto requiredSize = size_ + min;
+    if (requiredSize <= capacity_) {
+      return {data_ + size_, std::min(capacity_, effectiveMax) - size_};
+    }
+
+    const auto baseCapacity = std::max(capacity_, size_);
+    const auto availableGrowth = effectiveMax - baseCapacity;
+    const auto geometricGrowth = baseCapacity / 2;
+    const auto preferredGrowth = std::max<std::size_t>({min, newAllocationSize, geometricGrowth});
+    const auto grownCapacity = baseCapacity + std::min(preferredGrowth, availableGrowth);
+    if (grownCapacity < requiredSize) {
       return {nullptr, 0};
     }
 
-    const auto grownCapacity = capacity_ + additional;
     std::byte *replacement = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, grownCapacity);
+    if (replacement == nullptr) {
+      throw std::bad_alloc();
+    }
+
     if (size_ > 0) {
       std::memcpy(replacement, data_, size_);
     }
@@ -88,10 +116,13 @@ public:
     data_ = replacement;
     capacity_ = grownCapacity;
 
-    return {data_ + size_, std::min(max, capacity_ - size_)};
+    return {data_ + size_, std::min(capacity_ - size_, effectiveMax - size_)};
   }
 
-  void postallocate(std::size_t n) noexcept {
+  void postallocate(std::size_t n) {
+    if (n > (capacity_ - std::min(capacity_, size_))) [[unlikely]] {
+      throw std::overflow_error("buffer postallocation exceeds capacity");
+    }
     size_ += n;
   }
 
@@ -99,11 +130,24 @@ public:
     if (begin == end) {
       return;
     }
+    const auto less = std::less<const std::byte *>{};
+    if (begin == nullptr || end == nullptr || less(end, begin)) [[unlikely]] {
+      throw std::invalid_argument("invalid buffer append range");
+    }
+
     const auto length = static_cast<std::size_t>(end - begin);
+    if (capacity_ > 0) {
+      const auto *storageEnd = data_ + capacity_;
+      if (less(begin, storageEnd) && less(data_, end)) [[unlikely]] {
+        throw std::invalid_argument("buffer append source overlaps storage");
+      }
+    }
+
     auto [buffer, available] = preallocate(length, BufferUtils::growthSize(length));
-    if (buffer == nullptr) [[unlikely]] {
+    if (buffer == nullptr || available < length) [[unlikely]] {
       throw std::bad_alloc{};
     }
+
     std::memcpy(buffer, begin, length);
     postallocate(length);
   }
@@ -145,7 +189,7 @@ public:
   }
 
   [[nodiscard]] const std::byte *end() const noexcept {
-    return data_ + size_;
+    return size_ == 0 ? data_ : data_ + size_;
   }
 
   ~Buffer() {
@@ -153,42 +197,6 @@ public:
       std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
     }
   }
-};
-
-class BufferWriter final {
-public:
-  BufferWriter(std::byte *data, std::size_t capacity) : begin_(data), current_(data), end_(data + capacity) {
-  }
-
-  void put(std::byte value) {
-    if (current_ == end_) [[unlikely]] {
-      throw std::overflow_error("overflow");
-    }
-    *current_++ = value;
-  }
-
-  void write(const void *data, std::size_t length) {
-    if (static_cast<std::size_t>(end_ - current_) < length) [[unlikely]] {
-      throw std::overflow_error("overflow");
-    }
-    if (length > 0) [[likely]] {
-      std::memcpy(current_, data, length);
-      current_ += length;
-    }
-  }
-
-  void write(std::span<const std::byte> data) {
-    write(data.data(), data.size_bytes());
-  }
-
-  [[nodiscard]] std::size_t written() const noexcept {
-    return static_cast<std::size_t>(current_ - begin_);
-  }
-
-private:
-  std::byte *begin_{};
-  std::byte *current_{};
-  std::byte *end_{};
 };
 
 } // namespace nbt
