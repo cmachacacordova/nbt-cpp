@@ -434,14 +434,23 @@ TEST(CoreTests, EndListsRequireZeroElements) {
 
   auto invalidList = emptyList;
   invalidList.payload = nbt::Tag::Container{nbt::Tag{}};
-  EXPECT_TRUE(equalBytes(N(invalidList).encode(), bytes));
-
   auto wrongElementType = nbt::Tag("values", nbt::Type::Int, {nbt::Tag(nbt::Tag::Int{1})});
   std::get<nbt::Tag::Container>(wrongElementType.payload)[0] = nbt::Tag(nbt::Tag::Long{1});
+#ifdef NBT_STRICT_MODE
+  // Strict mode encodes invalid input as-is; the malformed bytes fail on parse.
+  EXPECT_THROW((void)N::parse(N(invalidList).encode()), nbt::Exception);
+  const auto verbatim = N::parse(N(wrongElementType).encode());
+  EXPECT_EQ(verbatim.root().type(), nbt::Type::List);
+  EXPECT_EQ(verbatim.root().elementType(), nbt::Type::Int);
+  EXPECT_EQ(verbatim.root().size(), 1);
+#else
+  EXPECT_TRUE(equalBytes(N(invalidList).encode(), bytes));
+
   const auto skipped = N::parse(N(wrongElementType).encode());
   EXPECT_EQ(skipped.root().type(), nbt::Type::List);
-  EXPECT_EQ(skipped.root().elementType(), nbt::Type::Int);
+  EXPECT_EQ(skipped.root().elementType(), nbt::Type::End);
   EXPECT_EQ(skipped.root().size(), 0);
+#endif
 
   auto namedElement = nbt::Tag("values", nbt::Type::Int, {nbt::Tag(nbt::Tag::Int{1})});
   std::get<nbt::Tag::Container>(namedElement.payload)[0].name = "ignored";
@@ -450,9 +459,13 @@ TEST(CoreTests, EndListsRequireZeroElements) {
   EXPECT_EQ(encoded.root().child(0).as<nbt::Type::Int>(), 1);
 
   const auto compound = nbt::Tag("root", nbt::Tag::Container{nbt::Tag{}, nbt::Tag("value", nbt::Tag::Int{2})});
+#ifdef NBT_STRICT_MODE
+  EXPECT_THROW((void)N(compound).encode(), std::invalid_argument);
+#else
   const auto pruned = N::parse(N(compound).encode());
   EXPECT_EQ(pruned.root().size(), 1);
   EXPECT_EQ(pruned.root().find("value").as<nbt::Type::Int>(), 2);
+#endif
 }
 
 TEST(CoreTests, MalformedInput) {
@@ -468,8 +481,140 @@ TEST(CoreTests, MalformedInput) {
   const std::array negativeArrayLength{std::byte{static_cast<unsigned char>(nbt::Type::ByteArray)}, std::byte{0}, std::byte{0}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
   EXPECT_THROW((void)N::parse(negativeArrayLength), E);
 
+  // Parsing named bytes as unnamed is not an error: any root type is accepted and
+  // the caller is responsible for interpreting the result correctly.
   auto scalar = N(nbt::Tag("value", nbt::Tag::Int{1}));
   nbt::Options network;
   network.named = false;
-  EXPECT_THROW((void)N::parse(scalar.encode(), network), E);
+  const auto misread = N::parse(scalar.encode(), network);
+  EXPECT_TRUE(misread.valid());
+  EXPECT_EQ(misread.root().type(), nbt::Type::Int);
 }
+
+TEST(CoreTests, NamedFlag) {
+  using N = nbt::Nbt;
+
+  const auto named = N(sample()).encode(true);
+  const auto unnamed = N(sample()).encode(false);
+  EXPECT_EQ(unnamed.size(), named.size() - 2 - 4); // minus u16 length and "root"
+  EXPECT_TRUE(equalBytes(std::span(unnamed).subspan(1), std::span(named).subspan(7)));
+
+  const auto fromNamed = N::parse(named);
+  EXPECT_TRUE(equalBytes(fromNamed.encode(false), unnamed));
+  EXPECT_TRUE(equalBytes(fromNamed.encode(true), named));
+
+  nbt::Options options;
+  options.named = false;
+  const auto fromUnnamed = N::parse(unnamed, options);
+  EXPECT_TRUE(fromUnnamed.valid());
+  EXPECT_EQ(fromUnnamed.root().name(), "");
+  const auto renamed = fromUnnamed.encode(true);
+  EXPECT_EQ(renamed.size(), unnamed.size() + 2);
+  EXPECT_TRUE(equalBytes(std::span(renamed).subspan(3), std::span(unnamed).subspan(1)));
+
+  N incremental;
+  incremental.append(std::span<const std::byte>(unnamed), false);
+  EXPECT_EQ(incremental.status(), nbt::Status::Complete);
+  EXPECT_EQ(incremental.root().type(), nbt::Type::Compound);
+}
+
+TEST(CoreTests, NonCompoundRoot) {
+  using N = nbt::Nbt;
+
+  const auto scalar = N(nbt::Tag("solo", nbt::Tag::Int{7})).encode();
+  const auto document = N::parse(scalar);
+  EXPECT_TRUE(document.valid());
+  EXPECT_EQ(document.root().type(), nbt::Type::Int);
+  EXPECT_EQ(document.root().as<nbt::Type::Int>(), 7);
+
+  nbt::Options options;
+  options.named = false;
+  const auto unnamedScalar = N(nbt::Tag("solo", nbt::Tag::Int{7})).encode(false);
+  const auto unnamedDocument = N::parse(unnamedScalar, options);
+  EXPECT_TRUE(unnamedDocument.valid());
+  EXPECT_EQ(unnamedDocument.root().as<nbt::Type::Int>(), 7);
+}
+
+TEST(CoreTests, TruncatedParseThrowsNeedMoreData) {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  EXPECT_THROW((void)N::parse(std::span<const std::byte>(bytes).first(bytes.size() - 1)), nbt::NeedMoreDataException);
+  EXPECT_THROW((void)N::parse(std::span<const std::byte>{}), nbt::NeedMoreDataException);
+}
+
+TEST(CoreTests, EncodeErrors) {
+  using N = nbt::Nbt;
+
+  N empty;
+  EXPECT_THROW((void)empty.encode(), nbt::Exception);
+
+  N endRoot{nbt::Tag{}};
+  EXPECT_THROW((void)endRoot.encode(), std::invalid_argument);
+
+  const std::array incompleteBytes{std::byte{0x0A}};
+  N incomplete = N::parseAtMost(std::span<const std::byte>{incompleteBytes});
+  EXPECT_THROW((void)incomplete.encode(), nbt::Exception);
+}
+
+TEST(CoreTests, MaterializeAllTypes) {
+  using N = nbt::Nbt;
+  const auto tag = N::parse(N(sample()).encode()).materialize();
+  EXPECT_EQ(tag.type, nbt::Type::Compound);
+  const auto &children = std::get<nbt::Tag::Container>(tag.payload);
+  EXPECT_EQ(std::get<nbt::Tag::Int>(children[0].payload), 42);
+  EXPECT_EQ(std::get<nbt::Tag::String>(children[1].payload), "Alex");
+  EXPECT_EQ(children[2].elementType, nbt::Type::Int);
+  EXPECT_EQ(std::get<nbt::Tag::IntArray>(children[3].payload).size(), 3);
+  EXPECT_EQ(std::get<nbt::Tag::LongArray>(children[4].payload)[1], 200);
+}
+
+#ifndef NBT_STRICT_MODE
+TEST(CoreTests, LenientEncodingIgnoresInvalidValues) {
+  using N = nbt::Nbt;
+
+  nbt::Tag wrongPayload{"bad", std::string_view("x")};
+  wrongPayload.type = nbt::Type::Int;
+
+  nbt::Tag containerArray{"converted", nbt::Type::End, {}};
+  containerArray.type = nbt::Type::IntArray;
+  containerArray.payload = nbt::Tag::Container{
+      nbt::Tag(std::int32_t{4}),
+      nbt::Tag(std::int64_t{9}),
+      nbt::Tag(std::int32_t{6}),
+  };
+
+  nbt::Tag root{"root", std::vector<nbt::Tag>{
+      nbt::Tag("ok", std::int32_t{7}),
+      nbt::Tag{},
+      wrongPayload,
+      containerArray,
+      nbt::Tag("l", nbt::Type::Int, std::vector<nbt::Tag>{
+          nbt::Tag(std::int32_t{1}),
+          nbt::Tag(std::string_view("junk")),
+      }),
+  }};
+
+  const auto document = N::parse(N(root).encode());
+  const auto view = document.root();
+  EXPECT_EQ(view.find("ok").as<nbt::Type::Int>(), 7);
+  EXPECT_FALSE(view.find("bad"));
+  const auto converted = view.find("converted").as<nbt::Type::IntArray>();
+  ASSERT_EQ(converted.size(), 2);
+  EXPECT_EQ(converted[0], 4);
+  EXPECT_EQ(converted[1], 6);
+  const auto list = view.find("l").as<nbt::Type::List>();
+  ASSERT_EQ(list.size(), 1);
+  EXPECT_EQ(list[0].as<nbt::Type::Int>(), 1);
+}
+#else
+TEST(CoreTests, StrictEncodingRejectsInvalidValues) {
+  using N = nbt::Nbt;
+
+  nbt::Tag wrongPayload{"bad", std::string_view("x")};
+  wrongPayload.type = nbt::Type::Int;
+  EXPECT_THROW((void)N(wrongPayload).encode(), std::bad_variant_access);
+
+  nbt::Tag endChild{"root", std::vector<nbt::Tag>{nbt::Tag{}, nbt::Tag("ok", std::int32_t{7})}};
+  EXPECT_THROW((void)N(endChild).encode(), std::invalid_argument);
+}
+#endif

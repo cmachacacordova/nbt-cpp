@@ -2,7 +2,7 @@
 
 ## Scope
 
-`nbt-cpp` implements binary NBT for Minecraft Java Edition. Java NBT uses big-endian byte order and may appear as file NBT (`nbt::Source::File`) or network NBT (`nbt::Source::Network`).
+`nbt-cpp` implements binary NBT for Minecraft Java Edition. Java NBT uses big-endian byte order. The root tag may be named (file format) or unnamed (network format); the `named` flag in `nbt::Options` (parse/`append`) and in `encode` selects between them. Any NBT type is accepted as the root.
 
 The library does not implement little-endian Bedrock NBT, Bedrock network/VarInt NBT, or private formats used by external tools. Those formats must not be treated as compatible or used as positive fixtures.
 
@@ -10,7 +10,7 @@ Tests validate observable behavior through the public API rather than implementa
 
 - `Tag` construction, literals, string-like names, and values convertible to `Tag`.
 - Encoding, parsing, materialization, and round trips for every NBT type.
-- File and Network formats.
+- Named and unnamed root tags (file and network formats), including re-encoding with the opposite flag.
 - Borrowed input, owned input, and incremental accumulation with `append`.
 - Lazy views, iteration, arrays, and document/view lifetimes.
 - SNBT, filesystem access, and None, Gzip, and Zlib compression.
@@ -66,7 +66,8 @@ Installed-package compatibility should also be tested with a consumer that calls
 
 Before adding new conformance vectors, explicitly document:
 
-- The public `Source` name versus alternatives such as `Format`.
+- The resolved `named` flag policy: any input is stored as a named tag, and `encode` chooses whether to emit the name.
+- The `NBT_STRICT_MODE` boundary: strict builds assume well-formed input (exceptions or UB on violations); non-strict builds ignore invalid values during encoding. Tests should cover both when the build defines the macro.
 - The current absence of `encodeView()`; do not document or test an API that does not exist.
 - The policy for invalid UTF-8.
 - Preservation of NaN and non-finite values in SNBT.

@@ -39,6 +39,7 @@ CMake options:
 - `NBT_CPP_BUILD_TESTS` (default `ON`)
 - `NBT_CPP_BUILD_EXAMPLES` (default `ON`)
 - `NBT_CPP_BUILD_UTILITIES` (default `ON`, requires ZLIB)
+- `NBT_STRICT_MODE` (default `OFF`): when enabled the encoder assumes well-formed input and performs no value validation; when disabled, invalid values are ignored during encoding.
 
 ## Parsing input
 
@@ -81,26 +82,28 @@ if (document.status() == nbt::Status::NeedMoreData) {
   document.append(secondChunk);
 }
 
-if (document.complete()) {
+if (document.valid()) {
   const auto root = document.root();
 }
 ```
 
 An empty parser has `Status::Empty`. Truncated input has `Status::NeedMoreData`; malformed input throws `nbt::Exception`, whose `offset()` identifies the byte position when available. `clear()` resets the document to `Status::Empty`.
 
-## File and network formats
+## Named and unnamed root tags
 
-File NBT is the default and contains one named root tag. Network NBT contains an unnamed `TAG_Compound` root. Select the network format by passing `nbt::Source::Network` when parsing:
-
-```cpp
-nbt::Nbt document = nbt::Nbt::parse(packetBytes, nbt::Source::Network);
-```
-
-The same format can be selected when encoding:
+By default a document expects and emits a **named** root tag (file format). An unnamed root (network format) is selected with the `named` flag: set `Options::named` to `false` when parsing, and pass `false` to `encode`:
 
 ```cpp
-auto networkBytes = document.encode(nbt::Source::Network);
+nbt::Options options;
+options.named = false;
+nbt::Nbt document = nbt::Nbt::parse(packetBytes, options);
 ```
+
+```cpp
+auto networkBytes = document.encode(false);
+```
+
+`encode(false)` excludes the root name even when the source carried one, and `encode(true)` emits the stored (possibly empty) name. The same `named` flag applies to `append` when accumulating chunks. Any NBT type is accepted as the root.
 
 The parser applies configurable safety limits through `Options`: maximum depth, container elements, total nodes and input bytes. Trailing bytes beyond the validated root are accepted and retained in `document.bytes()`; `document.encode()` writes only the valid NBT portion.
 
@@ -146,7 +149,7 @@ nbt::Buffer output;
 document.encode(output);
 ```
 
-`document.bytes()` returns a span over the parser's current internal or borrowed bytes. `encode()` and `encode(output)` can re-encode a different `Source` format, materializing the tree when necessary.
+`document.bytes()` returns a span over the parser's current internal or borrowed bytes. `encode(named)` can switch between named and unnamed output regardless of how the input was parsed.
 
 ## Optional utilities
 

@@ -1,3 +1,14 @@
+/**
+ * @file buffer.h
+ * @author Carlos Machaca (carloscordova96@hotmail.com)
+ * @brief
+ * @version 0.1
+ * @date 2026-09-28
+ *
+ * @copyright Copyright (c) 2026
+ *
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -14,7 +25,7 @@ namespace nbt {
 
 namespace BufferUtils {
 
-[[nodiscard]] std::size_t growthSize(std::size_t needed) noexcept {
+[[nodiscard]] inline std::size_t growthSize(std::size_t needed) noexcept {
   constexpr std::size_t blockSize = 64;
   const auto remainder = needed % blockSize;
   if (remainder == 0) {
@@ -30,13 +41,6 @@ namespace BufferUtils {
 } // namespace BufferUtils
 
 class Buffer {
-private:
-  inline static std::allocator<std::byte> byteAlloc{};
-
-  std::byte *data_{};
-  std::size_t size_{0};
-  std::size_t capacity_{0};
-
 public:
   Buffer() = default;
 
@@ -78,6 +82,12 @@ public:
     const auto initial = std::max<std::size_t>(64, capacity);
     data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, initial);
     capacity_ = initial;
+  }
+
+  ~Buffer() {
+    if (capacity_ > 0) {
+      std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
+    }
   }
 
   std::pair<void *, std::size_t> preallocate(std::size_t min, std::size_t newAllocationSize = 64, std::size_t max = std::numeric_limits<std::size_t>::max()) {
@@ -192,11 +202,12 @@ public:
     return size_ == 0 ? data_ : data_ + size_;
   }
 
-  ~Buffer() {
-    if (capacity_ > 0) {
-      std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
-    }
-  }
+private:
+  inline static std::allocator<std::byte> byteAlloc{};
+
+  std::byte *data_{};
+  std::size_t size_{0};
+  std::size_t capacity_{0};
 };
 
 } // namespace nbt

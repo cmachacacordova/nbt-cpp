@@ -114,3 +114,20 @@ TEST(UtilitiesTests, CompressedFileRoundTrip) {
   EXPECT_THROW((void)U::parseFile(path, U::Compression::None, inputLimit), nbt::Exception);
   std::filesystem::remove(path);
 }
+
+TEST(UtilitiesTests, UnnamedFileRoundTrip) {
+  using N = nbt::Nbt;
+  using U = nbt::NbtUtilities;
+
+  const auto path = std::filesystem::temp_directory_path() / "nbt-cpp-unnamed-test.dat";
+  N document(sample());
+  U::saveFile(path, document, U::Compression::None, false);
+
+  nbt::Options options;
+  options.named = false;
+  auto loaded = U::parseFile(path, U::Compression::None, options);
+  EXPECT_TRUE(loaded.valid());
+  EXPECT_EQ(loaded.root().name(), "");
+  EXPECT_EQ(loaded.root().find("answer").as<nbt::Type::Int>(), 42);
+  std::filesystem::remove(path);
+}

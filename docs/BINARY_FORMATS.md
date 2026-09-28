@@ -357,7 +357,7 @@ List of two float lists, each with one element:
 ```text
 Document
 |
-+-- root: one named tag (File) or one unnamed compound (Network)
++-- root: one named tag (File) or one unnamed tag (Network; conventionally a compound, but the codec accepts any type)
 
 TAG_Compound
 |
@@ -440,8 +440,8 @@ Contiguous bytes of the whole document:
 | Giving names to list elements | elements only carry payloads |
 | Encoding `TAG_End` as a named tag | `TAG_End` is only a compound terminator |
 | Omitting the final `00` of a compound | the parser would not know where it ends |
-| Negative list or array lengths | the length field is signed but negative values are invalid |
-| Unnamed root with a type other than `0A` | network format requires a compound root |
+| Negative list or array lengths | the length field is signed but negative values are invalid; this codec treats it as unsigned |
+| Unnamed root with a type other than `0A` | network format conventionally uses a compound root; this codec accepts any unnamed root type |
 | String longer than 65535 encoded bytes | the length field is `u16` |
 
 ---
@@ -458,7 +458,7 @@ NBT Document
 |     +-- List: elem_type + len + payload×N
 |     +-- Compound: NamedTag* + 0x00
 |
-+-- [Network] 0x0A + payload(Compound)
++-- [Network] type:u8 + payload (conventionally 0x0A Compound)
 ```
 
 Every recursive branch ends in: a primitive value, a string, an array, a list of payloads, or a compound closed by `00`.

@@ -8,10 +8,12 @@
  * - Malformed input is reported through nbt::Exception with the offending byte offset.
  * - Truncated input never fails: it is reported as nbt::Status::NeedMoreData so the
  *   document can be completed later with NbtParser::append.
- * - During encoding, values that do not match the declared type are ignored instead of
- *   raising errors. List elements whose Tag::type differs from the list Tag::elementType,
- *   and TAG_End children inside compounds, are skipped. Callers are responsible for
- *   providing well-formed input.
+ * - Encoding has two modes selected by the NBT_STRICT_MODE macro. In strict mode the
+ *   caller guarantees standard-compliant input and the library performs no value
+ *   validation (mismatches produce exceptions or undefined behavior); the encoded
+ *   size is the exact computed size. In non-strict mode values that do not match
+ *   their declared Tag::type or list element type are ignored during encoding, and
+ *   the size computation mirrors the same filtering so the buffer is exact.
  *
  * @version 0.1
  * @date 2026-09-16
@@ -50,7 +52,8 @@ using namespace std::string_literals;
 
 namespace utils {
 
-constexpr std::size_t MAX_SIZE = static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)());
+constexpr std::size_t MAX_COUNT = static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)()); ///< Maximum element count.
+constexpr std::size_t MAX_BYTES = (std::numeric_limits<std::size_t>::max)();                             ///< Byte-size saturation bound.
 constexpr std::size_t MAX_STR_SIZE = static_cast<std::size_t>((std::numeric_limits<std::uint16_t>::max)());
 constexpr std::uint32_t NO_NODE = (std::numeric_limits<std::uint32_t>::max)();
 
@@ -159,8 +162,10 @@ struct Options {
  *   treated as a TAG_Compound.
  * - Passing Type::End as the explicit element type of a list ignores the supplied
  *   children and constructs an empty list.
- * - Encoding is lenient: list elements whose type differs from the list element
- *   type, and TAG_End children inside compounds, are ignored rather than rejected.
+ * - With NBT_STRICT_MODE defined, encoding assumes well-formed input and skips all
+ *   value validation; violations produce exceptions or undefined behavior. Without
+ *   it, invalid values (mismatched payloads, wrong list element types, TAG_End
+ *   children) are ignored during encoding.
  */
 struct Tag {
 
@@ -177,6 +182,12 @@ struct Tag {
   using Container = std::vector<Tag>;  ///< Owning TAG_List or TAG_Compound payload.
 
   using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, Container, ByteArray, IntArray, LongArray>;
+
+  /**
+   * @brief Whether @p T is a valid element type for vector-based constructors.
+   */
+  template <typename T>
+  static constexpr bool isElementType = std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
 
   std::string name;            ///< Tag name. Ignored for list and array elements.
   Type type{Type::End};        ///< NBT type of this tag.
@@ -284,12 +295,6 @@ struct Tag {
   }
 
   /**
-   * @brief Whether @p T is a valid element type for vector-based constructors.
-   */
-  template <typename T>
-  static constexpr bool isElementType = std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
-
-  /**
    * @brief Construct an unnamed typed-array, list or compound tag from an initializer list.
    * @tparam T The element type. See the std::vector overload for the type mapping.
    * @param elements The elements to store.
@@ -387,6 +392,22 @@ struct Tag {
   }
 };
 
+/**
+ * @brief Structural index entry: byte ranges and sibling/child links into the input.
+ */
+struct Node {
+  std::uint32_t begin{};       ///< Offset where the tag payload begins.
+  std::uint32_t end{};         ///< Offset where the tag ends.
+  std::uint32_t payload{};     ///< Offset of the decodable payload bytes.
+  std::uint32_t nameOffset{};  ///< Offset of the tag name bytes.
+  std::uint32_t firstChild{};  ///< Index of the first child node, or @ref noNode.
+  std::uint32_t nextSibling{}; ///< Index of the next sibling node, or @ref noNode.
+  std::uint32_t childCount{};  ///< Number of direct children.
+  std::uint16_t nameSize{};    ///< Tag name length in bytes.
+  Type type{Type::End};        ///< NBT type of the node.
+  Type elementType{Type::End}; ///< List element type, when @ref type is Type::List.
+};
+
 class NbtUtilities;
 
 /**
@@ -397,10 +418,11 @@ class NbtUtilities;
  * completed later with @ref append. Malformed input throws nbt::Exception.
  *
  * @par Encoding policy
- * Encoding never rejects mismatched values. List elements whose Tag::type differs from
- * the list Tag::elementType are ignored, and TAG_End children inside compounds are
- * skipped. The encoded list length counts only the elements actually written. Callers
- * are responsible for providing well-formed input.
+ * With NBT_STRICT_MODE defined, values are encoded exactly as declared by their
+ * Tag::type and the caller is responsible for supplying well-formed input;
+ * violations produce exceptions or undefined behavior. Without it, invalid values
+ * are ignored: mismatched payloads, wrong list element types and TAG_End children
+ * are skipped, and the encoded size accounts only for the values actually written.
  *
  * @tparam BufferT Owning contiguous byte storage used for accumulated input and encoded
  *                 output. Defaults to nbt::Buffer.
@@ -512,136 +534,6 @@ public:
     return parseImpl(data, options, false);
   }
 
-private:
-  [[nodiscard]] static NbtParser parseImpl(std::span<const std::byte> data, const Options &options, bool atMost) {
-    nbt::NbtParser<BufferT> document;
-    document.setMaxDepth(options.maxDepth);
-    document.setMaxContainerElements(options.maxContainerElements);
-    document.setMaxTotalNodes(options.maxTotalNodes);
-    document.setMaxInputBytes(options.maxInputBytes);
-
-    if (data.empty()) [[unlikely]] {
-      if (atMost) {
-        document.status_ = Status::NeedMoreData;
-        return document;
-      }
-      throw nbt::NeedMoreDataException("empty data", 0);
-    }
-
-    document.data_ = data;
-    document.validate(atMost, options.named);
-    return document;
-  }
-
-  template <typename Container>
-  [[nodiscard]] static NbtParser parseImpl(const Container &data, const Options &options, bool atMost) {
-    NbtParser document;
-    document.setMaxDepth(options.maxDepth);
-    document.setMaxContainerElements(options.maxContainerElements);
-    document.setMaxTotalNodes(options.maxTotalNodes);
-    document.setMaxInputBytes(options.maxInputBytes);
-
-    if (data.empty()) {
-      if (atMost) {
-        document.status_ = Status::NeedMoreData;
-        return document;
-      }
-      throw nbt::NeedMoreDataException("data empty", 0);
-    }
-
-    const std::span<const std::byte> view = asBytes(data);
-    document.appendImpl(view);
-    document.validate(atMost, options.named);
-    return document;
-  }
-
-  /**
-   * @brief Structural index entry: byte ranges and sibling/child links into the input.
-   */
-  struct Node {
-    std::uint32_t begin{};       ///< Offset where the tag payload begins.
-    std::uint32_t end{};         ///< Offset where the tag ends.
-    std::uint32_t payload{};     ///< Offset of the decodable payload bytes.
-    std::uint32_t nameOffset{};  ///< Offset of the tag name bytes.
-    std::uint32_t firstChild{};  ///< Index of the first child node, or @ref noNode.
-    std::uint32_t nextSibling{}; ///< Index of the next sibling node, or @ref noNode.
-    std::uint32_t childCount{};  ///< Number of direct children.
-    std::uint16_t nameSize{};    ///< Tag name length in bytes.
-    Type type{Type::End};        ///< NBT type of the node.
-    Type elementType{Type::End}; ///< List element type, when @ref type is Type::List.
-  };
-
-  /**
-   * @brief Bounds-checked byte writer over a preallocated buffer region.
-   */
-  class BufferWriter final {
-  public:
-    BufferWriter(std::byte *data, std::size_t capacity) : begin_(data), current_(data), end_(capacity == 0 ? data : data + capacity) {
-      if (data == nullptr && capacity != 0) [[unlikely]] {
-        throw std::invalid_argument("null buffer writer storage");
-      }
-    }
-
-    void put(std::byte value) {
-      if (current_ == end_) [[unlikely]] {
-        throw std::overflow_error("overflow");
-      }
-      *current_++ = value;
-    }
-
-    void write(const void *data, std::size_t length) {
-      if (length == 0) {
-        return;
-      }
-      if (data == nullptr) [[unlikely]] {
-        throw std::invalid_argument("null buffer writer input");
-      }
-      if (current_ == nullptr || static_cast<std::size_t>(end_ - current_) < length) [[unlikely]] {
-        throw std::overflow_error("overflow");
-      }
-      std::memcpy(current_, data, length);
-      current_ += length;
-    }
-
-    template <typename T>
-    void writeBE(T value) {
-      if constexpr (sizeof(T) == 1) {
-        put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
-      } else {
-        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
-#ifndef NBT_BIG_ENDIAN
-        bits = std::byteswap(bits);
-#endif
-        write(&bits, sizeof(T));
-      }
-    }
-
-    template <typename T>
-    void writeLE(T value) {
-      if constexpr (sizeof(T) == 1) {
-        put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
-      } else {
-        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
-#ifdef NBT_BIG_ENDIAN
-        bits = std::byteswap(bits);
-#endif
-        write(&bits, sizeof(T));
-      }
-    }
-
-    [[nodiscard]] std::size_t written() const noexcept {
-      return begin_ == nullptr ? 0 : static_cast<std::size_t>(current_ - begin_);
-    }
-
-  private:
-    std::byte *begin_{};
-    std::byte *current_{};
-    std::byte *end_{};
-  };
-
-  friend class nbt::NbtUtilities;
-
-public:
   /**
    * @brief Lazy big-endian view over a TAG_Int_Array or TAG_Long_Array payload.
    *
@@ -700,7 +592,7 @@ public:
      * @brief Number of elements in the array.
      */
     [[nodiscard]] std::size_t size() const noexcept {
-      return owner_ ? static_cast<std::size_t>(owner_->readNumber<std::int32_t>(payload_)) : 0;
+      return owner_ ? static_cast<std::size_t>(owner_->readNumber<std::uint32_t>(payload_)) : 0;
     }
 
     /**
@@ -933,7 +825,7 @@ public:
         const auto size = owner_->readNumber<std::uint16_t>(offset);
         return owner_->text(offset + 2, size);
       } else if constexpr (t == Type::ByteArray) {
-        const auto count = owner_->readNumber<std::int32_t>(node().payload);
+        const auto count = owner_->readNumber<std::uint32_t>(node().payload);
         return std::span<const std::byte>{owner_->data_.data() + node().payload + 4, static_cast<std::size_t>(count)};
       } else if constexpr (t == Type::IntArray) {
         return IntArrayView(owner_, node().payload);
@@ -1042,7 +934,6 @@ public:
     swap(rootValue_, nbt.rootValue_);
     swap(nodes_, nbt.nodes_);
 
-    swap(encodedSize_, nbt.encodedSize_);
     swap(position_, nbt.position_);
 
     swap(maxDepth_, nbt.maxDepth_);
@@ -1087,7 +978,6 @@ public:
     data_.reset();
     rootValue_.reset();
     status_ = Status::Empty;
-    encodedSize_ = 0;
     position_ = 0;
     nodes_.clear();
   }
@@ -1148,10 +1038,8 @@ public:
    * @brief Encode the document to a new buffer.
    *
    * Only the valid NBT portion is written; trailing bytes accepted during parsing are
-   * not reproduced. Values that cannot be encoded under their declared type are ignored:
-   * list elements whose type differs from the element type are skipped (the written
-   * length counts only the elements emitted), and TAG_End children inside compounds are
-   * omitted.
+   * not reproduced. With NBT_STRICT_MODE the caller must supply well-formed input;
+   * without it, invalid values are ignored during encoding.
    *
    * @param named Whether to include the root tag name (file style) or omit it (network style).
    * @return The encoded bytes.
@@ -1171,21 +1059,41 @@ public:
    * @throws std::bad_alloc if the output buffer cannot grow.
    */
   void encode(BufferT &output, bool named = true) const {
-    if (status_ != nbt::Status::Complete && data_.empty() && nodes_.empty() && rootValue_ == std::nullopt) {
+    if (rootValue_ == std::nullopt && nodes_.empty()) {
       throw nbt::Exception("incomplete data", 0);
     }
 
     if (rootValue_) {
+      if (rootValue_->type == Type::End) {
+        throw std::invalid_argument("TAG_End");
+      }
+
       const std::size_t valueEncodedSize = encodedSize(rootValue_.value(), named);
       auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
+      if (buffer == nullptr) [[unlikely]] {
+        throw std::bad_alloc();
+      }
+
       BufferWriter appender{static_cast<std::byte *>(buffer), available};
-      appendTag(appender, rootValue_.value(), named);
+      appender.writeBE(static_cast<std::uint8_t>(rootValue_->type));
+      if (named) {
+        appendString(appender, rootValue_->name);
+      }
+      appendPayload(appender, rootValue_.value());
+
       output.postallocate(appender.written());
-    } else if (nodes_) {
+    } else if (!nodes_.empty()) {
       const Node &rootNode = nodes_[0];
+      if (rootNode.type == Type::End) {
+        throw std::invalid_argument("TAG_End");
+      }
+
       const std::size_t headerSize = named ? 2 + static_cast<std::size_t>(rootNode.nameSize) : 0;
       const std::size_t valueEncodedSize = 1 + headerSize + (rootNode.end - rootNode.payload);
       auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
+      if (buffer == nullptr) [[unlikely]] {
+        throw std::bad_alloc();
+      }
 
       BufferWriter appender{static_cast<std::byte *>(buffer), available};
       appender.put(static_cast<std::byte>(rootNode.type));
@@ -1194,6 +1102,7 @@ public:
         appender.write(data_.data() + rootNode.nameOffset, rootNode.nameSize);
       }
       appender.write(data_.data() + rootNode.payload, rootNode.end - rootNode.payload);
+
       output.postallocate(appender.written());
     }
   }
@@ -1213,6 +1122,76 @@ public:
   }
 
 private:
+  /**
+   * @brief Bounds-checked byte writer over a preallocated buffer region.
+   */
+  class BufferWriter final {
+  public:
+    BufferWriter(std::byte *data, std::size_t capacity) : begin_(data), current_(data), end_(capacity == 0 ? data : data + capacity) {
+      if (data == nullptr && capacity != 0) [[unlikely]] {
+        throw std::invalid_argument("null buffer writer storage");
+      }
+    }
+
+    void put(std::byte value) {
+      if (current_ == end_) [[unlikely]] {
+        throw std::overflow_error("overflow");
+      }
+      *current_++ = value;
+    }
+
+    void write(const void *data, std::size_t length) {
+      if (length == 0) {
+        return;
+      }
+      if (data == nullptr) [[unlikely]] {
+        throw std::invalid_argument("null buffer writer input");
+      }
+      if (current_ == nullptr || static_cast<std::size_t>(end_ - current_) < length) [[unlikely]] {
+        throw std::overflow_error("overflow");
+      }
+      std::memcpy(current_, data, length);
+      current_ += length;
+    }
+
+    template <typename T>
+    void writeBE(T value) {
+      if constexpr (sizeof(T) == 1) {
+        put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
+      } else {
+        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
+#ifndef NBT_BIG_ENDIAN
+        bits = std::byteswap(bits);
+#endif
+        write(&bits, sizeof(T));
+      }
+    }
+
+    template <typename T>
+    void writeLE(T value) {
+      if constexpr (sizeof(T) == 1) {
+        put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
+      } else {
+        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
+#ifdef NBT_BIG_ENDIAN
+        bits = std::byteswap(bits);
+#endif
+        write(&bits, sizeof(T));
+      }
+    }
+
+    [[nodiscard]] std::size_t written() const noexcept {
+      return begin_ == nullptr ? 0 : static_cast<std::size_t>(current_ - begin_);
+    }
+
+  private:
+    std::byte *begin_{};
+    std::byte *current_{};
+    std::byte *end_{};
+  };
+
+  friend class nbt::NbtUtilities;
+
   NbtParser(BufferT &buffer) : data_{std::move(buffer)} {
   }
 
@@ -1260,7 +1239,6 @@ private:
 
       parseNode(0, nbt::utils::NO_NODE, named);
 
-      encodedSize_ = position_;
       status_ = Status::Complete;
     } catch (const NeedMoreDataException &nmEx) {
       nodes_.clear();
@@ -1370,7 +1348,7 @@ private:
 
   void skipArray(std::size_t width) {
     const auto count = readCount();
-    if (count > nbt::utils::MAX_SIZE) {
+    if (count > nbt::utils::MAX_COUNT) {
       throw Exception("NBT array size overflow", position_);
     }
     skip(count * width);
@@ -1387,7 +1365,7 @@ private:
   [[nodiscard]] Type readType(std::size_t offset) {
     const auto raw = readNumber<std::uint8_t>(offset);
     if (raw > static_cast<std::uint8_t>(Type::LongArray)) {
-      throw Exception("unknown NBT type", position_ - 1);
+      throw Exception("unknown NBT type", offset);
     }
     return static_cast<Type>(raw);
   }
@@ -1402,6 +1380,7 @@ private:
 
   template <class T>
   [[nodiscard]] T readNumber(std::size_t offset) const {
+    require(offset, sizeof(T));
     if constexpr (sizeof(T) == 1) {
       return static_cast<T>(std::to_integer<std::uint8_t>(data_.data()[offset]));
     } else {
@@ -1432,18 +1411,16 @@ private:
     position_ += count;
   }
 
+  void require(std::size_t offset, std::size_t count) const {
+    if (count > data_.size() - std::min(data_.size(), offset)) {
+      throw NeedMoreDataException("need more data", offset);
+    }
+  }
+
   void require(std::size_t count) const {
     if (count > data_.size() - std::min(data_.size(), position_)) {
       throw NeedMoreDataException("need more data", position_);
     }
-  }
-
-  template <std::size_t MAX = nbt::utils::MAX_SIZE>
-  [[nodiscard]] static std::uint32_t checkedOffset(std::size_t value) {
-    if (value > MAX) {
-      throw Exception("NBT offset exceeds "s + std::to_string(MAX), value);
-    }
-    return static_cast<std::uint32_t>(value);
   }
 
   [[nodiscard]] std::string_view text(std::size_t offset, std::size_t size) const {
@@ -1502,7 +1479,8 @@ private:
       value.payload = std::move(result);
       break;
     }
-    case Type::List: {
+    case Type::List:
+    case Type::Compound: {
       std::vector<Tag> values;
       values.reserve(node.childCount);
       for (const auto child : View(this, nodeIndex)) {
@@ -1512,19 +1490,60 @@ private:
       value.payload = std::move(values);
       break;
     }
-    case Type::Compound: {
-      std::vector<Tag> values;
-      values.reserve(node.childCount);
-      for (const auto child : View(this, nodeIndex)) {
-        values.push_back(child.materialize());
-      }
-      value.payload = std::move(values);
-      break;
-    }
     case Type::End:
       break;
     }
     return value;
+  }
+
+  [[nodiscard]] static NbtParser parseImpl(std::span<const std::byte> data, const Options &options, bool atMost) {
+    nbt::NbtParser<BufferT> document;
+    document.setMaxDepth(options.maxDepth);
+    document.setMaxContainerElements(options.maxContainerElements);
+    document.setMaxTotalNodes(options.maxTotalNodes);
+    document.setMaxInputBytes(options.maxInputBytes);
+
+    if (data.empty()) [[unlikely]] {
+      if (atMost) {
+        document.status_ = Status::NeedMoreData;
+        return document;
+      }
+      throw nbt::NeedMoreDataException("empty data", 0);
+    }
+
+    document.data_ = data;
+    document.validate(atMost, options.named);
+    return document;
+  }
+
+  template <typename Container>
+  [[nodiscard]] static NbtParser parseImpl(const Container &data, const Options &options, bool atMost) {
+    NbtParser document;
+    document.setMaxDepth(options.maxDepth);
+    document.setMaxContainerElements(options.maxContainerElements);
+    document.setMaxTotalNodes(options.maxTotalNodes);
+    document.setMaxInputBytes(options.maxInputBytes);
+
+    if (data.empty()) {
+      if (atMost) {
+        document.status_ = Status::NeedMoreData;
+        return document;
+      }
+      throw nbt::NeedMoreDataException("data empty", 0);
+    }
+
+    const std::span<const std::byte> view = asBytes(data);
+    document.appendImpl(view);
+    document.validate(atMost, options.named);
+    return document;
+  }
+
+  template <std::size_t MAX = nbt::utils::MAX_COUNT>
+  [[nodiscard]] static std::uint32_t checkedOffset(std::size_t value) {
+    if (value > MAX) {
+      throw Exception("NBT offset exceeds "s + std::to_string(MAX), value);
+    }
+    return static_cast<std::uint32_t>(value);
   }
 
   static std::size_t stringSize(std::string_view value) noexcept {
@@ -1535,9 +1554,10 @@ private:
   }
 
   static std::size_t listSize(const Tag &parent, const Tag::Container &values) noexcept {
-    if (values.size() > utils::MAX_SIZE - 5) {
-      return utils::MAX_SIZE;
+    if (values.size() > utils::MAX_COUNT - 5) {
+      return utils::MAX_COUNT;
     }
+#ifdef NBT_STRICT_MODE
     switch (parent.elementType) {
     case Type::End:
       return 5;
@@ -1559,12 +1579,9 @@ private:
     case Type::LongArray: {
       std::size_t size = 5;
       for (const auto &element : values) {
-        if (element.type != parent.elementType) {
-          continue;
-        }
         const auto elementSize = payloadSize(element);
-        if (elementSize > utils::MAX_SIZE - size) {
-          return utils::MAX_SIZE;
+        if (elementSize > utils::MAX_BYTES - size) {
+          return utils::MAX_BYTES;
         }
         size += elementSize;
       }
@@ -1572,39 +1589,67 @@ private:
     }
     }
     return 0;
-  }
-
-  [[nodiscard]] static std::size_t listElementCount(const Tag &parent, const Tag::Container &values) noexcept {
-    if (parent.elementType == Type::End) {
-      return 0;
-    }
-    std::size_t count = 0;
+#else
+    std::size_t size = 5;
     for (const auto &element : values) {
-      if (element.type == parent.elementType) {
-        ++count;
+      if (element.type != parent.elementType || !payloadMatches(element)) {
+        continue;
       }
+      const auto elementSize = payloadSize(element);
+      if (elementSize > utils::MAX_BYTES - size) {
+        return utils::MAX_BYTES;
+      }
+      size += elementSize;
     }
-    return count;
+    return size;
+#endif
   }
 
+#ifdef NBT_STRICT_MODE
   template <typename T>
     requires std::disjunction_v<std::is_same<T, Tag::Byte>, std::is_same<T, Tag::Int>, std::is_same<T, Tag::Long>>
   static std::size_t arraySize(const std::vector<T> &values) noexcept {
-    if (values.size() > utils::MAX_SIZE) {
-      return utils::MAX_SIZE;
+    if (values.size() > utils::MAX_COUNT) {
+      return utils::MAX_COUNT;
     }
     return 4 + (values.size() * sizeof(T));
   }
 
+#else
+  template <typename T, Type ElementT>
+  static std::size_t arraySize(const Tag::Payload &payload) noexcept {
+    std::size_t count = 0;
+    if (const auto *values = std::get_if<std::vector<T>>(&payload)) {
+      count = values->size();
+    } else if (const auto *container = std::get_if<Tag::Container>(&payload)) {
+      for (const auto &element : *container) {
+        if (element.type == ElementT && std::holds_alternative<T>(element.payload)) {
+          ++count;
+        }
+      }
+    }
+    if (count > utils::MAX_COUNT) {
+      return utils::MAX_COUNT;
+    }
+    return 4 + (count * sizeof(T));
+  }
+#endif
+
   static std::size_t compoundSize(const Tag::Container &values) noexcept {
     std::size_t size = 1;
     for (const auto &element : values) {
+#ifdef NBT_STRICT_MODE
       if (element.type == Type::End) {
+        break;
+      }
+#else
+      if (element.type == Type::End || !payloadMatches(element)) {
         continue;
       }
+#endif
       const auto elementSize = encodedSize(element, true);
-      if (elementSize > utils::MAX_SIZE - size) {
-        return utils::MAX_SIZE;
+      if (elementSize > utils::MAX_BYTES - size) {
+        return utils::MAX_BYTES;
       }
       size += elementSize;
     }
@@ -1620,20 +1665,60 @@ private:
   }
 
   static void appendLength(BufferWriter &output, std::size_t size) {
-    if (size > nbt::utils::MAX_SIZE) {
+    if (size > nbt::utils::MAX_COUNT) {
       throw std::length_error("NBT container is too large");
     }
-    output.writeBE(static_cast<std::int32_t>(size));
+    output.writeBE(static_cast<std::uint32_t>(size));
   }
 
-  static void appendTag(BufferWriter &output, const Tag &value, bool named = true) {
+#ifndef NBT_STRICT_MODE
+  /**
+   * @brief Whether the payload variant matches the declared Tag::type (level 1).
+   *
+   * Nested container contents are re-validated when their own encoding branch runs.
+   * Used by the non-strict encoding paths to ignore invalid values consistently in
+   * both size computation and writing.
+   */
+  [[nodiscard]] static bool payloadMatches(const Tag &value) noexcept {
+    switch (value.type) {
+    case Type::Byte:
+      return std::holds_alternative<Tag::Byte>(value.payload);
+    case Type::Short:
+      return std::holds_alternative<Tag::Short>(value.payload);
+    case Type::Int:
+      return std::holds_alternative<Tag::Int>(value.payload);
+    case Type::Long:
+      return std::holds_alternative<Tag::Long>(value.payload);
+    case Type::Float:
+      return std::holds_alternative<Tag::Float>(value.payload);
+    case Type::Double:
+      return std::holds_alternative<Tag::Double>(value.payload);
+    case Type::String:
+      return std::holds_alternative<Tag::String>(value.payload);
+    case Type::ByteArray:
+      return std::holds_alternative<Tag::ByteArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
+    case Type::IntArray:
+      return std::holds_alternative<Tag::IntArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
+    case Type::LongArray:
+      return std::holds_alternative<Tag::LongArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
+    case Type::List:
+    case Type::Compound:
+      return std::holds_alternative<Tag::Container>(value.payload);
+    case Type::End:
+      return false;
+    }
+    return false;
+  }
+#endif
+
+  static void appendTag(BufferWriter &output, const Tag &value) {
     if (value.type == Type::End) {
       throw std::invalid_argument("TAG_End");
     }
-    output.writeBE(static_cast<std::byte>(value.type));
-    if (named) {
-      appendString(output, value.name);
-    }
+    output.put(static_cast<std::byte>(value.type));
+
+    appendString(output, value.name);
+
     appendPayload(output, value);
   }
 
@@ -1652,11 +1737,23 @@ private:
     case Type::String:
       return stringSize(std::get<std::string>(value.payload));
     case Type::ByteArray:
+#ifdef NBT_STRICT_MODE
       return arraySize(std::get<Tag::ByteArray>(value.payload));
+#else
+      return arraySize<Tag::Byte, Type::Byte>(value.payload);
+#endif
     case Type::IntArray:
+#ifdef NBT_STRICT_MODE
       return arraySize(std::get<Tag::IntArray>(value.payload));
+#else
+      return arraySize<Tag::Int, Type::Int>(value.payload);
+#endif
     case Type::LongArray:
+#ifdef NBT_STRICT_MODE
       return arraySize(std::get<Tag::LongArray>(value.payload));
+#else
+      return arraySize<Tag::Long, Type::Long>(value.payload);
+#endif
     case Type::List:
       return listSize(value, std::get<Tag::Container>(value.payload));
     case Type::Compound:
@@ -1691,86 +1788,125 @@ private:
       appendString(output, std::get<std::string>(value.payload));
       break;
     case Type::ByteArray: {
-      nbt::Tag::ByteArray values;
-      if (std::holds_alternative<nbt::Tag::ByteArray>(value.payload)) {
-        values = std::get<nbt::Tag::ByteArray>(value.payload);
-      } else if (std::holds_alternative<nbt::Tag::Container>(value.payload)) {
-        const auto &tagValues = std::get<nbt::Tag::Container>(value.payload);
-        values.reserve(tagValues.size());
-        for (auto element : tagValues) {
-          if (element.type == Type::Byte) {
-            values.push_back(std::get<nbt::Tag::Byte>(element.payload));
-          }
-        }
-      }
+#ifdef NBT_STRICT_MODE
+      const auto &values = std::get<Tag::ByteArray>(value.payload);
       appendLength(output, values.size());
       output.write(values.data(), values.size());
+#else
+      if (const auto *values = std::get_if<Tag::ByteArray>(&value.payload)) {
+        appendLength(output, values->size());
+        output.write(values->data(), values->size());
+      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
+        nbt::Tag::ByteArray converted;
+        converted.reserve(tagValues->size());
+        for (const auto &element : *tagValues) {
+          if (const auto *scalar = std::get_if<nbt::Tag::Byte>(&element.payload); element.type == Type::Byte && scalar != nullptr) {
+            converted.push_back(*scalar);
+          }
+        }
+        appendLength(output, converted.size());
+        output.write(converted.data(), converted.size());
+      } else {
+        appendLength(output, 0);
+      }
+
+#endif
       break;
     }
     case Type::IntArray: {
-      nbt::Tag::IntArray values;
-      if (std::holds_alternative<nbt::Tag::IntArray>(value.payload)) {
-        values = std::get<nbt::Tag::IntArray>(value.payload);
-      } else if (std::holds_alternative<nbt::Tag::Container>(value.payload)) {
-        const auto &tagValues = std::get<nbt::Tag::Container>(value.payload);
-        values.reserve(tagValues.size());
-        for (auto element : tagValues) {
-          if (element.type == Type::Int) {
-            values.push_back(std::get<nbt::Tag::Int>(element.payload));
-          }
-        }
-      }
+#ifdef NBT_STRICT_MODE
+      const auto &values = std::get<Tag::IntArray>(value.payload);
       appendLength(output, values.size());
-      for (auto element : values) {
+      for (const auto &element : values) {
         output.writeBE(element);
       }
+#else
+      if (const auto *values = std::get_if<Tag::IntArray>(&value.payload)) {
+        appendLength(output, values->size());
+        for (const auto &element : *values) {
+          output.writeBE(element);
+        }
+      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
+        nbt::Tag::IntArray converted;
+        converted.reserve(tagValues->size());
+        for (const auto &element : *tagValues) {
+          if (const auto *scalar = std::get_if<nbt::Tag::Int>(&element.payload); element.type == Type::Int && scalar != nullptr) {
+            converted.push_back(*scalar);
+          }
+        }
+        appendLength(output, converted.size());
+        for (const auto &element : converted) {
+          output.writeBE(element);
+        }
+      } else {
+        appendLength(output, 0);
+      }
+#endif
       break;
     }
     case Type::LongArray: {
-
-      nbt::Tag::LongArray values;
-      if (std::holds_alternative<nbt::Tag::LongArray>(value.payload)) {
-        values = std::get<nbt::Tag::LongArray>(value.payload);
-      } else if (std::holds_alternative<nbt::Tag::Container>(value.payload)) {
-        const auto &tagValues = std::get<nbt::Tag::Container>(value.payload);
-        values.reserve(tagValues.size());
-        for (auto element : tagValues) {
-          if (element.type == Type::Long) {
-            values.push_back(std::get<nbt::Tag::Long>(element.payload));
-          }
-        }
-      }
+#ifdef NBT_STRICT_MODE
+      const auto &values = std::get<Tag::LongArray>(value.payload);
       appendLength(output, values.size());
-      for (auto element : values) {
+      for (const auto &element : values) {
         output.writeBE(element);
       }
+#else
+      if (const auto *values = std::get_if<Tag::LongArray>(&value.payload)) {
+        appendLength(output, values->size());
+        for (const auto &element : *values) {
+          output.writeBE(element);
+        }
+      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
+        nbt::Tag::LongArray converted;
+        converted.reserve(tagValues->size());
+        for (const auto &element : *tagValues) {
+          if (const auto *scalar = std::get_if<nbt::Tag::Long>(&element.payload); element.type == Type::Long && scalar != nullptr) {
+            converted.push_back(*scalar);
+          }
+        }
+        appendLength(output, converted.size());
+        for (const auto &element : converted) {
+          output.writeBE(element);
+        }
+      } else {
+        appendLength(output, 0);
+      }
+#endif
       break;
     }
     case Type::List: {
+#ifdef NBT_STRICT_MODE
+      const auto &values = std::get<Tag::Container>(value.payload);
+#else
       const auto &listValue = std::get<Tag::Container>(value.payload);
-      output.writeBE(static_cast<std::uint8_t>(value.elementType));
-
       nbt::Tag::Container values;
       values.reserve(listValue.size());
       for (const auto &element : listValue) {
-        if (element.type != value.elementType) {
-          continue;
+        if (element.type == value.elementType && payloadMatches(element)) {
+          values.push_back(element);
         }
-        values.push_back(element);
       }
-
-      appendLength(output, values.size());
+#endif
+      if (values.empty()) {
+        output.writeBE(static_cast<std::uint8_t>(nbt::Type::End));
+        appendLength(output, 0);
+      } else {
+        output.writeBE(static_cast<std::uint8_t>(value.elementType));
+        appendLength(output, values.size());
+      }
       for (const auto &element : values) {
         appendPayload(output, element);
       }
-
       break;
     }
     case Type::Compound:
       for (const auto &child : std::get<Tag::Container>(value.payload)) {
-        if (child.type == Type::End) {
-          break;
+#ifndef NBT_STRICT_MODE
+        if (child.type == Type::End || !payloadMatches(child)) {
+          continue;
         }
+#endif
         appendTag(output, child);
       }
       output.put(std::byte{0});
@@ -1804,10 +1940,9 @@ private:
   std::optional<Tag> rootValue_;
   std::vector<Node> nodes_;
 
-  std::size_t encodedSize_{0};
-  mutable std::size_t position_{0};
+  std::size_t position_{0};
 
-  /// Optiopns
+  /// Options
   std::size_t maxDepth_{512};
   std::size_t maxContainerElements_{static_cast<std::size_t>(16U * 1024U * 1024U)};
   std::size_t maxTotalNodes_{static_cast<std::size_t>(64U * 1024U * 1024U)};

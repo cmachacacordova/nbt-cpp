@@ -49,13 +49,29 @@ public:
 
 class NbtUtilities final {
 public:
+  /**
+   * @brief File compression mode. Auto detects gzip/zlib on input and is invalid for output.
+   */
   enum class Compression : std::uint8_t { None, Gzip, Zlib, Auto };
 
+  /**
+   * @brief Parse SNBT text into an owning nbt::Tag.
+   * @param input SNBT text.
+   * @return The decoded root tag.
+   * @throws nbt::Exception on malformed input.
+   */
   [[nodiscard]] static nbt::Tag parseSnbt(std::string_view input) {
     nbt::Options options;
     return parseSnbt(input, options);
   }
 
+  /**
+   * @brief Parse SNBT text into an owning nbt::Tag with resource limits.
+   * @param input SNBT text.
+   * @param options Resource limits applied during parsing.
+   * @return The decoded root tag.
+   * @throws nbt::Exception on malformed input or violated limits.
+   */
   [[nodiscard]] static nbt::Tag parseSnbt(std::string_view input, const nbt::Options &options) {
     if (input.size() > options.maxInputBytes) {
       throw nbt::Exception("SNBT input byte limit exceeded", 0);
@@ -69,24 +85,52 @@ public:
     return value;
   }
 
+  /**
+   * @brief Serialize an owning tag to SNBT text.
+   * @param value Tag to serialize.
+   * @param pretty Emit newlines and indentation when true.
+   * @return The SNBT representation.
+   */
   [[nodiscard]] static std::string toSnbt(const nbt::Tag &value, bool pretty = false) {
     std::string output;
     writeSnbt(output, value, pretty, 0, false);
     return output;
   }
 
+  /**
+   * @brief Read an NBT file with automatic compression detection.
+   * @param path File to read.
+   * @return A validated document owning the file bytes.
+   * @throws nbt::UtilException on I/O failure; nbt::Exception on malformed input.
+   */
   template <typename BufferT = nbt::Buffer>
   [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path) {
     nbt::Options options;
     return parseFile(path, Compression::Auto, options);
   }
 
+  /**
+   * @brief Read an NBT file with an explicit compression mode.
+   * @param path File to read.
+   * @param compression Compression applied to the file contents.
+   * @return A validated document owning the file bytes.
+   * @throws nbt::UtilException on I/O failure; nbt::Exception on malformed input.
+   */
   template <typename BufferT = nbt::Buffer>
   [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path, Compression compression) {
     nbt::Options options;
     return parseFile(path, compression, options);
   }
 
+  /**
+   * @brief Read an NBT file with explicit compression and resource limits.
+   * @param path File to read.
+   * @param compression Compression applied to the file contents.
+   * @param options Resource limits applied during validation; `named` selects whether
+   *                the root tag carries a name.
+   * @return A validated document owning the file bytes.
+   * @throws nbt::UtilException on I/O failure; nbt::Exception on malformed input.
+   */
   template <typename BufferT = nbt::Buffer>
   [[nodiscard]] static nbt::NbtParser<BufferT> parseFile(const std::filesystem::path &path, Compression compression, const nbt::Options &options) {
     BufferT buf;
@@ -108,11 +152,9 @@ public:
       constexpr std::size_t chunkSize = 1 << 16;
       std::array<char, chunkSize> buffer;
 
-      while (input->read(buffer.data(), static_cast<std::streamsize>(buffer.size()))) {
+      while (input->read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || input->gcount() > 0) {
         const auto bytesRead = input->gcount();
-        if (bytesRead > 0) {
-          buf.append(reinterpret_cast<const std::byte *>(buffer.data()), reinterpret_cast<const std::byte *>(buffer.data() + bytesRead));
-        }
+        buf.append(reinterpret_cast<const std::byte *>(buffer.data()), reinterpret_cast<const std::byte *>(buffer.data() + bytesRead));
       }
 
       if (input->bad()) {
@@ -133,6 +175,15 @@ public:
     return document;
   }
 
+  /**
+   * @brief Encode a document and write it to a file, optionally compressed.
+   * @param path Destination file.
+   * @param document Document to encode.
+   * @param compression Output compression; Compression::Auto is invalid here.
+   * @param named Whether the encoded root tag carries its name.
+   * @param level ZLIB compression level.
+   * @throws std::invalid_argument on Compression::Auto; nbt::UtilException on I/O failure.
+   */
   template <typename BufferT = nbt::Buffer>
   static void saveFile(const std::filesystem::path &path, const nbt::NbtParser<BufferT> &document, Compression compression = Compression::None, bool named = true, int level = Z_DEFAULT_COMPRESSION) {
     if (compression == Compression::Auto) {

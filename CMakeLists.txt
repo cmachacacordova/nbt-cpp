@@ -4,6 +4,7 @@ project(nbt-cpp VERSION 0.2.0 LANGUAGES CXX)
 option(NBT_CPP_BUILD_TESTS "Build nbt-cpp tests" ON)
 option(NBT_CPP_BUILD_EXAMPLES "Build nbt-cpp examples" ON)
 option(NBT_CPP_BUILD_UTILITIES "Expose SNBT, filesystem and compression utilities" ON)
+option(NBT_STRICT_MODE "Optimize encoding for well-formed input; invalid values produce exceptions or UB instead of being ignored" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/endianness")
 include(DetectHostEndianness)
@@ -19,6 +20,10 @@ target_include_directories(nbt-cpp INTERFACE
 
 if (NBT_BIG_ENDIAN)
 target_compile_definitions(nbt-cpp INTERFACE NBT_BIG_ENDIAN=${NBT_BIG_ENDIAN})
+endif()
+
+if (NBT_STRICT_MODE)
+target_compile_definitions(nbt-cpp INTERFACE NBT_STRICT_MODE)
 endif()
 
 if(NBT_CPP_BUILD_UTILITIES)
