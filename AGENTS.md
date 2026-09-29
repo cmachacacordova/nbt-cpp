@@ -94,3 +94,9 @@ Run `git diff --check` before completing changes. Do not modify unrelated workin
 - For canonical values include scalar limits, signed zero/non-finite floating-point cases where supported, empty and boundary-sized arrays/strings, nested lists/compounds and embedded NUL strings.
 - Use independent golden vectors for exact bytes, and clean up temporary files created by filesystem tests.
 - Verify Debug and Release, strict warnings, package consumption through `find_package(nbt-cpp CONFIG REQUIRED)` where relevant, and `git diff --check`.
+
+## Agent implementation notes
+
+- `Node` stores byte offsets (`begin`, `end`, `payload`) and child/sibling links. Tag names are not kept separately; they are reconstructed from the input bytes following the Java Edition NBT layout. For a **named** tag the on-wire layout is `[type:1][name_length:2][name:N]`, so the name bytes lie between `begin + 3` and `payload`. For **unnamed** tags — list elements and unnamed roots — there is no name header, so the payload follows the type byte directly. Any helper that reconstructs a name from the offsets must guard that case.
+- `View::name()` delegates to `NbtParser::nodeName()`. When changing offset handling, keep both in sync and test `materialize()` on lists/arrays and unnamed roots, not just named compounds.
+- The byte-comparison helper in the test files (`equalBytes`) is kept as a local helper because `nbt::Buffer`, `std::span`, `std::array` and `std::vector` do not share a single `operator==`. Do not replace it with plain `EXPECT_EQ` unless an explicit common container is created first. Prefer `EXPECT_PRED_FORMAT2` if better failure diagnostics are needed.

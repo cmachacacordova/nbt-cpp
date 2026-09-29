@@ -69,12 +69,10 @@ public:
   Buffer(std::span<const std::byte> view) : data_{const_cast<std::byte *>(view.data())}, size_{view.size_bytes()} {
   }
 
-  Buffer &operator=(std::span<const std::byte> &other) noexcept {
-    if (this->data_ != other.data()) {
-      reset();
-      data_ = const_cast<std::byte *>(other.data());
-      size_ = other.size_bytes();
-    }
+  Buffer &operator=(std::span<const std::byte> other) noexcept {
+    reset();
+    data_ = const_cast<std::byte *>(other.data());
+    size_ = other.size_bytes();
     return *this;
   }
 

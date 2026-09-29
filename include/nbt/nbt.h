@@ -396,14 +396,19 @@ struct Tag {
  * @brief Structural index entry: byte ranges and sibling/child links into the input.
  */
 struct Node {
-  std::uint32_t begin{};       ///< Offset where the tag payload begins.
-  std::uint32_t end{};         ///< Offset where the tag ends.
-  std::uint32_t payload{};     ///< Offset of the decodable payload bytes.
-  std::uint32_t nameOffset{};  ///< Offset of the tag name bytes.
+  /// Bytes
+  std::uint32_t begin{};   ///< Offset where the tag begins (type byte for named tags; payload for list elements).
+  std::uint32_t end{};     ///< Offset immediately after the tag.
+  std::uint32_t payload{}; ///< Offset of the decodable payload bytes.
+
+  /// Indices
   std::uint32_t firstChild{};  ///< Index of the first child node, or @ref noNode.
   std::uint32_t nextSibling{}; ///< Index of the next sibling node, or @ref noNode.
-  std::uint32_t childCount{};  ///< Number of direct children.
-  std::uint16_t nameSize{};    ///< Tag name length in bytes.
+
+  /// Counts
+  std::uint32_t childCount{}; ///< Number of direct children.
+
+  /// Types
   Type type{Type::End};        ///< NBT type of the node.
   Type elementType{Type::End}; ///< List element type, when @ref type is Type::List.
 };
@@ -714,14 +719,14 @@ public:
     }
 
     /**
-     * @brief Byte offset where the tag payload begins in the document buffer.
+     * @brief Byte offset where the tag begins in the document buffer.
      */
     [[nodiscard]] std::size_t payloadBegin() const {
       return node().begin;
     }
 
     /**
-     * @brief Byte offset where the tag ends in the document buffer.
+     * @brief Byte offset immediately after the tag in the document buffer.
      */
     [[nodiscard]] std::size_t payloadEnd() const {
       return node().end;
@@ -731,8 +736,7 @@ public:
      * @brief Tag name, empty for unnamed tags such as list elements.
      */
     [[nodiscard]] std::string_view name() const {
-      const auto &entry = node();
-      return owner_->text(entry.nameOffset, entry.nameSize);
+      return owner_->nodeName(node());
     }
 
     /**
@@ -1088,7 +1092,8 @@ public:
         throw std::invalid_argument("TAG_End");
       }
 
-      const std::size_t headerSize = named ? 2 + static_cast<std::size_t>(rootNode.nameSize) : 0;
+      std::string_view name = nodeName(rootNode);
+      const std::size_t headerSize = named ? 2 + name.size() : 0;
       const std::size_t valueEncodedSize = 1 + headerSize + (rootNode.end - rootNode.payload);
       auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
       if (buffer == nullptr) [[unlikely]] {
@@ -1098,8 +1103,8 @@ public:
       BufferWriter appender{static_cast<std::byte *>(buffer), available};
       appender.put(static_cast<std::byte>(rootNode.type));
       if (named) {
-        appender.writeBE(rootNode.nameSize);
-        appender.write(data_.data() + rootNode.nameOffset, rootNode.nameSize);
+        appender.writeBE(static_cast<std::uint16_t>(name.size()));
+        appender.write(name.data(), name.size());
       }
       appender.write(data_.data() + rootNode.payload, rootNode.end - rootNode.payload);
 
@@ -1205,14 +1210,18 @@ private:
     }
 
     if (named) {
-      const auto nameSize = readNumber<std::uint16_t>();
-      nodes_[nodeIndex].nameOffset = checkedOffset<nbt::utils::MAX_STR_SIZE>(position_);
-      nodes_[nodeIndex].nameSize = nameSize;
-      skip(nameSize);
+      skip(readNumber<std::uint16_t>());
     }
 
     parsePayload(nodeIndex, type, depth);
     return nodeIndex;
+  }
+
+  [[nodiscard]] std::string_view nodeName(const Node &value) const {
+    if (value.payload <= value.begin + 3) {
+      return {};
+    }
+    return text(value.begin + 3, value.payload - value.begin - 3);
   }
 
   void appendImpl(std::span<const std::byte> chunk) {
@@ -1429,9 +1438,10 @@ private:
 
   [[nodiscard]] Tag materialize(std::uint32_t nodeIndex) const {
     const auto &node = nodes_[nodeIndex];
+    const auto name = nodeName(node);
     Tag value;
     value.type = node.type;
-    value.name.assign(text(node.nameOffset, node.nameSize));
+    value.name.assign(name);
     switch (node.type) {
     case Type::Byte:
       value.payload = readNumber<Tag::Byte>(node.payload);
@@ -1926,7 +1936,7 @@ private:
   }
 
   template <typename T, typename B = T, typename V>
-  [[nodiscard]] static B bitCast(V &value) {
+  [[nodiscard]] static B bitCast(const V &value) {
     if constexpr (std::is_floating_point_v<T>) {
       return std::bit_cast<B>(value);
     } else {
