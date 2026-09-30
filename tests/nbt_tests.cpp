@@ -337,6 +337,44 @@ TEST(CoreTests, EveryTruncation) {
   }
 }
 
+TEST(CoreTests, EveryIncrementalTruncation) {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  N document;
+  for (const auto byte : bytes) {
+    document.append(std::span<const std::byte>(&byte, 1));
+  }
+  EXPECT_EQ(document.status(), nbt::Status::Complete);
+  EXPECT_TRUE(equalBytes(document.encode(), bytes));
+  EXPECT_EQ(document.root().find("values").child(1).as<nbt::Type::Int>(), 2);
+  EXPECT_EQ(document.root().find("nested").find("value").as<nbt::Type::Float>(), 1.5F);
+}
+
+TEST(CoreTests, IncrementalMatchesSingleParse) {
+  using N = nbt::Nbt;
+  const auto bytes = N(sample()).encode();
+  const std::span<const std::byte> view(bytes);
+
+  const N whole = N::parse(view);
+  ASSERT_EQ(whole.status(), nbt::Status::Complete);
+  const auto wholeTag = whole.materialize();
+
+  for (std::size_t split = 1; split < bytes.size(); ++split) {
+    N chunked;
+    chunked.append(view.first(split));
+    chunked.append(view.subspan(split));
+    ASSERT_EQ(chunked.status(), nbt::Status::Complete) << "split=" << split;
+    EXPECT_TRUE(equalBytes(chunked.bytes(), bytes)) << "split=" << split;
+    EXPECT_TRUE(equalBytes(chunked.encode(), bytes)) << "split=" << split;
+
+    const auto chunkedTag = chunked.materialize();
+    EXPECT_EQ(chunkedTag.name, wholeTag.name) << "split=" << split;
+    EXPECT_EQ(chunkedTag.type, wholeTag.type) << "split=" << split;
+    EXPECT_EQ(chunkedTag.elementType, wholeTag.elementType) << "split=" << split;
+    EXPECT_TRUE(chunkedTag.payload == wholeTag.payload) << "split=" << split;
+  }
+}
+
 TEST(CoreTests, ArrayViews) {
   using N = nbt::Nbt;
   const auto bytes = N(sample()).encode();
@@ -516,6 +554,28 @@ TEST(CoreTests, NamedFlag) {
   incremental.append(std::span<const std::byte>(unnamed), false);
   EXPECT_EQ(incremental.status(), nbt::Status::Complete);
   EXPECT_EQ(incremental.root().type(), nbt::Type::Compound);
+}
+
+TEST(CoreTests, NameRoundTrips) {
+  using N = nbt::Nbt;
+
+  auto root = sample();
+  root.name.clear();
+  const auto namedEmpty = N(root).encode(true);
+  const auto parsedEmpty = N::parse(namedEmpty);
+  EXPECT_EQ(parsedEmpty.root().name(), "");
+  EXPECT_TRUE(equalBytes(parsedEmpty.encode(true), namedEmpty));
+
+  const auto bytes = N(sample()).encode();
+  const auto document = N::parse(bytes);
+  const auto values = document.root().find("values");
+  EXPECT_EQ(values.child(0).name(), "");
+  EXPECT_EQ(values.child(1).name(), "");
+
+  const auto roundTrip = N::parse(document.encode());
+  EXPECT_EQ(roundTrip.root().name(), "root");
+  EXPECT_EQ(roundTrip.root().find("answer").name(), "answer");
+  EXPECT_EQ(roundTrip.root().find("nested").find("value").name(), "value");
 }
 
 TEST(CoreTests, NonCompoundRoot) {

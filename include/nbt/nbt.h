@@ -396,14 +396,16 @@ struct Tag {
  * @brief Structural index entry: byte ranges and sibling/child links into the input.
  */
 struct Node {
+  static constexpr std::uint32_t END = (std::numeric_limits<std::uint32_t>::max)();
+
   /// Bytes
-  std::uint32_t begin{};   ///< Offset where the tag begins (type byte for named tags; payload for list elements).
-  std::uint32_t end{};     ///< Offset immediately after the tag.
-  std::uint32_t payload{}; ///< Offset of the decodable payload bytes.
+  std::uint32_t begin{nbt::Node::END};   ///< Offset where the tag begins (type byte for named tags; payload for list elements).
+  std::uint32_t end{nbt::Node::END};     ///< Offset immediately after the tag.
+  std::uint32_t payload{nbt::Node::END}; ///< Offset of the decodable payload bytes.
 
   /// Indices
-  std::uint32_t firstChild{};  ///< Index of the first child node, or @ref noNode.
-  std::uint32_t nextSibling{}; ///< Index of the next sibling node, or @ref noNode.
+  std::uint32_t firstChild{nbt::utils::NO_NODE};  ///< Index of the first child node, or @ref noNode.
+  std::uint32_t nextSibling{nbt::utils::NO_NODE}; ///< Index of the next sibling node, or @ref noNode.
 
   /// Counts
   std::uint32_t childCount{}; ///< Number of direct children.
@@ -411,6 +413,9 @@ struct Node {
   /// Types
   Type type{Type::End};        ///< NBT type of the node.
   Type elementType{Type::End}; ///< List element type, when @ref type is Type::List.
+
+  Node(std::uint32_t begin) : begin(begin) {
+  }
 };
 
 class NbtUtilities;
@@ -736,7 +741,8 @@ public:
      * @brief Tag name, empty for unnamed tags such as list elements.
      */
     [[nodiscard]] std::string_view name() const {
-      return owner_->nodeName(node());
+      const auto &entry = node();
+      return owner_->nodeName(entry);
     }
 
     /**
@@ -939,6 +945,7 @@ public:
     swap(nodes_, nbt.nodes_);
 
     swap(position_, nbt.position_);
+    swap(next_node_, nbt.next_node_);
 
     swap(maxDepth_, nbt.maxDepth_);
     swap(maxContainerElements_, nbt.maxContainerElements_);
@@ -983,6 +990,7 @@ public:
     rootValue_.reset();
     status_ = Status::Empty;
     position_ = 0;
+    next_node_ = 0;
     nodes_.clear();
   }
 
@@ -1063,7 +1071,7 @@ public:
    * @throws std::bad_alloc if the output buffer cannot grow.
    */
   void encode(BufferT &output, bool named = true) const {
-    if (rootValue_ == std::nullopt && nodes_.empty()) {
+    if (status_ != Status::Complete) {
       throw nbt::Exception("incomplete data", 0);
     }
 
@@ -1071,6 +1079,11 @@ public:
       if (rootValue_->type == Type::End) {
         throw std::invalid_argument("TAG_End");
       }
+#ifndef NBT_STRICT_MODE
+      if (!payloadMatches(*rootValue_)) {
+        throw std::invalid_argument("NBT payload does not match the declared tag type");
+      }
+#endif
 
       const std::size_t valueEncodedSize = encodedSize(rootValue_.value(), named);
       auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
@@ -1200,17 +1213,28 @@ private:
   NbtParser(BufferT &buffer) : data_{std::move(buffer)} {
   }
 
-  std::uint32_t parseNode(std::size_t depth, std::uint32_t previousSibling, bool named = true) {
-    const auto begin = position_;
-    const auto type = readType();
+  NbtParser(std::span<const std::byte> buffer) : data_{buffer} {
+  }
 
-    const auto nodeIndex = beginNode(type, begin);
+  std::uint32_t parseNode(std::size_t depth, std::uint32_t previousSibling, bool named = true, Type declared = Type::End) {
+    const auto begin = position_;
+    const auto nodeIndex = beginNode(begin);
+    if (nodes_[nodeIndex].end != nbt::Node::END) {
+      nbt::Node &node = nodes_[nodeIndex];
+      position_ = node.end;
+      next_node_ = node.nextSibling;
+      return nodeIndex;
+    }
+
     if (previousSibling != nbt::utils::NO_NODE) {
       nodes_[previousSibling].nextSibling = nodeIndex;
     }
 
+    const auto type = declared == Type::End ? readType() : declared;
+
     if (named) {
-      skip(readNumber<std::uint16_t>());
+      const auto nameSize = readNumber<std::uint16_t>();
+      skip(nameSize);
     }
 
     parsePayload(nodeIndex, type, depth);
@@ -1218,7 +1242,7 @@ private:
   }
 
   [[nodiscard]] std::string_view nodeName(const Node &value) const {
-    if (value.payload <= value.begin + 3) {
+    if (value.end == nbt::Node::END || value.payload < value.begin || value.payload - value.begin <= 3) {
       return {};
     }
     return text(value.begin + 3, value.payload - value.begin - 3);
@@ -1234,8 +1258,8 @@ private:
   }
 
   void validate(bool atMost, bool named = true) {
-    nodes_.clear();
     position_ = 0;
+    next_node_ = 0;
     try {
       if (data_.size() > maxInputBytes_) {
         throw Exception("NBT input byte limit exceeded", 0);
@@ -1250,7 +1274,7 @@ private:
 
       status_ = Status::Complete;
     } catch (const NeedMoreDataException &nmEx) {
-      nodes_.clear();
+      next_node_ = 0;
       position_ = 0;
       status_ = Status::NeedMoreData;
       if (atMost) {
@@ -1264,7 +1288,7 @@ private:
     if (depth > maxDepth_) {
       throw Exception("NBT depth limit exceeded", position_);
     }
-    nodes_[nodeIndex].payload = checkedOffset(position_);
+    const auto payload = checkedOffset(position_);
     switch (type) {
     case Type::Byte:
       skip(1);
@@ -1301,33 +1325,34 @@ private:
     case Type::End:
       throw Exception("unexpected TAG_End", position_);
     }
-    nodes_[nodeIndex].end = checkedOffset(position_);
+    auto &node = nodes_[nodeIndex];
+    node.type = type;
+    node.payload = payload;
+    node.end = checkedOffset(position_);
   }
 
   void parseList(std::uint32_t nodeIndex, std::size_t depth) {
     const auto elementType = readType();
-    const auto count = readCount();
-    if (elementType == Type::End && count != 0) {
+    const auto childCount = readCount();
+    const auto firstChild = next_node_;
+
+    if (elementType == Type::End && childCount != 0) {
       throw Exception("non-empty TAG_List uses TAG_End", position_);
     }
+
     auto &node = nodes_[nodeIndex];
     node.elementType = elementType;
-    node.childCount = checkedOffset(count);
-    node.firstChild = checkedOffset(nodes_.size());
+    node.childCount = checkedOffset(childCount);
+    node.firstChild = checkedOffset(firstChild);
 
     std::uint32_t previousSibling = nbt::utils::NO_NODE;
-    for (std::size_t index = 0; index < count; ++index) {
-      const auto child = beginNode(elementType, position_);
-      if (previousSibling != nbt::utils::NO_NODE) {
-        nodes_[previousSibling].nextSibling = child;
-      }
-      previousSibling = child;
-      parsePayload(child, elementType, depth + 1);
+    for (std::size_t index = 0; index < childCount; ++index) {
+      previousSibling = parseNode(depth + 1, previousSibling, false, elementType);
     }
   }
 
   void parseCompound(std::uint32_t nodeIndex, std::size_t depth) {
-    nodes_[nodeIndex].firstChild = checkedOffset(nodes_.size());
+    nodes_[nodeIndex].firstChild = checkedOffset(next_node_);
     std::size_t count{};
     std::uint32_t previousSibling = nbt::utils::NO_NODE;
     while (peek() != std::byte{}) {
@@ -1341,17 +1366,20 @@ private:
     nodes_[nodeIndex].childCount = checkedOffset(count);
   }
 
-  [[nodiscard]] std::uint32_t beginNode(Type type, std::size_t begin) {
+  [[nodiscard]] std::uint32_t beginNode(std::size_t begin) {
+    if (next_node_ < nodes_.size()) {
+      const auto currentNode = static_cast<std::uint32_t>(next_node_);
+      ++next_node_;
+      return currentNode;
+    }
+
     if (nodes_.size() >= maxTotalNodes_) {
       throw Exception("NBT node limit exceeded", position_);
     }
+
     const auto index = checkedOffset(nodes_.size());
-    Node node;
-    node.begin = checkedOffset(begin);
-    node.type = type;
-    node.firstChild = index + 1;
-    node.nextSibling = nbt::utils::NO_NODE;
-    nodes_.push_back(node);
+    nodes_.emplace_back(checkedOffset(begin));
+    next_node_ = nodes_.size();
     return index;
   }
 
@@ -1507,7 +1535,7 @@ private:
   }
 
   [[nodiscard]] static NbtParser parseImpl(std::span<const std::byte> data, const Options &options, bool atMost) {
-    nbt::NbtParser<BufferT> document;
+    nbt::NbtParser<BufferT> document(data);
     document.setMaxDepth(options.maxDepth);
     document.setMaxContainerElements(options.maxContainerElements);
     document.setMaxTotalNodes(options.maxTotalNodes);
@@ -1521,7 +1549,6 @@ private:
       throw nbt::NeedMoreDataException("empty data", 0);
     }
 
-    document.data_ = data;
     document.validate(atMost, options.named);
     return document;
   }
@@ -1951,6 +1978,7 @@ private:
   std::vector<Node> nodes_;
 
   std::size_t position_{0};
+  std::size_t next_node_{0};
 
   /// Options
   std::size_t maxDepth_{512};

@@ -73,7 +73,7 @@ The document owns the copied bytes, so the source container may be released afte
 
 ### Incremental input
 
-Use `append` to accumulate independent fragments. Each call copies the fragment and validates the accumulated bytes:
+Use `append` to accumulate independent fragments. Each call copies the fragment and validates the accumulated bytes. Revalidation reuses the structural index: nodes already validated are skipped through their sibling links, so only the truncated frontier is re-examined on each call.
 
 ```cpp
 nbt::Nbt document;
@@ -162,7 +162,7 @@ auto value = Utilities::parseSnbt("{health:20}");
 auto text = Utilities::toSnbt(value, true);
 
 auto document = Utilities::parseFile("level.dat");
-Utilities::save("copy.dat", document, Utilities::Compression::Gzip);
+Utilities::saveFile("copy.dat", document, Utilities::Compression::Gzip);
 ```
 
 Supported compression modes are `None`, `Gzip`, `Zlib` and `Auto`. `Auto` detects gzip or zlib input when loading and is invalid for output. The utilities header requires ZLIB.

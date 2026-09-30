@@ -155,6 +155,9 @@ public:
       while (input->read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || input->gcount() > 0) {
         const auto bytesRead = input->gcount();
         buf.append(reinterpret_cast<const std::byte *>(buffer.data()), reinterpret_cast<const std::byte *>(buffer.data() + bytesRead));
+        if (buf.size() > options.maxInputBytes) {
+          throw nbt::Exception("NBT input byte limit exceeded", 0);
+        }
       }
 
       if (input->bad()) {

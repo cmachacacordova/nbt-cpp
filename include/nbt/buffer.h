@@ -101,6 +101,10 @@ public:
     }
 
     const auto baseCapacity = std::max(capacity_, size_);
+    if (baseCapacity >= effectiveMax) {
+      return {nullptr, 0};
+    }
+
     const auto availableGrowth = effectiveMax - baseCapacity;
     const auto geometricGrowth = baseCapacity / 2;
     const auto preferredGrowth = std::max<std::size_t>({min, newAllocationSize, geometricGrowth});

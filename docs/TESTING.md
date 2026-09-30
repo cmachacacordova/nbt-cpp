@@ -72,7 +72,7 @@ Before adding new conformance vectors, explicitly document:
 - The policy for invalid UTF-8.
 - Preservation of NaN and non-finite values in SNBT.
 - Concatenated Gzip members.
-- The semantics of `append` after `Status::Complete`.
+- The semantics of `append` after `Status::Complete` are resolved: appended bytes become retained trailing input and the already validated root is not re-examined.
 - The trailing-byte policy: trailing bytes are accepted and retained in `document.bytes()`; `encode()` emits only the valid NBT portion.
 - The explicit Bedrock compatibility boundary.
 

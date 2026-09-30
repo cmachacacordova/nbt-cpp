@@ -142,7 +142,7 @@ Payload breakdown:
 | **Decoded** | 2 | 1 | -2 |
 | **Data** | `00 00 00 02` | `01` | `FE` |
 
-The payload starts with a signed 32-bit length, followed by that many signed 8-bit integers.
+The payload starts with an unsigned 32-bit length, followed by that many signed 8-bit integers.
 
 ---
 
@@ -186,7 +186,7 @@ Payload breakdown:
 | **Decoded** | `TAG_Short` | 3 | 1 | 2 | 3 |
 | **Data** | `02` | `00 00 00 03` | `00 01` | `00 02` | `00 03` |
 
-The payload contains: element type `u8`, length `i32`, and then each element's payload with no type or name.
+The payload contains: element type `u8`, length `u32`, and then each element's payload with no type or name.
 
 The element type byte is always present, even when the list contains no elements. Reading it is the only way to know what type the list is intended to hold.
 
@@ -197,7 +197,7 @@ An empty list conventionally uses `TAG_End` as its element type:
 | **Decoded** | `TAG_End` | 0 |
 | **Data** | `00` | `00 00 00 00` |
 
-The original Notchian implementation writes `TAG_End` for empty lists. Some later Mojang implementations write `TAG_Byte` (or the type the list would hold if it had elements) instead. Because a length of `0` means no element payloads follow, a parser should accept any element type when the list length is `0` or negative.
+The original Notchian implementation writes `TAG_End` for empty lists. Some later Mojang implementations write `TAG_Byte` (or the type the list would hold if it had elements) instead. Because a length of `0` means no element payloads follow, a parser should accept any element type when the list length is `0`.
 
 ---
 
@@ -248,7 +248,7 @@ Payload breakdown:
 | **Decoded** | 2 | 1 | -2 |
 | **Data** | `00 00 00 02` | `00 00 00 01` | `FF FF FF FE` |
 
-The payload starts with a signed 32-bit length, followed by that many signed 32-bit integers.
+The payload starts with an unsigned 32-bit length, followed by that many signed 32-bit integers.
 
 ---
 
@@ -270,7 +270,7 @@ Payload breakdown:
 | **Decoded** | 2 | 1 | -2 |
 | **Data** | `00 00 00 02` | `00 00 00 00 00 00 00 01` | `FF FF FF FF FF FF FF FE` |
 
-The payload starts with a signed 32-bit length, followed by that many signed 64-bit integers.
+The payload starts with an unsigned 32-bit length, followed by that many signed 64-bit integers.
 
 ---
 
@@ -440,7 +440,7 @@ Contiguous bytes of the whole document:
 | Giving names to list elements | elements only carry payloads |
 | Encoding `TAG_End` as a named tag | `TAG_End` is only a compound terminator |
 | Omitting the final `00` of a compound | the parser would not know where it ends |
-| Negative list or array lengths | the length field is signed but negative values are invalid; this codec treats it as unsigned |
+| List or array lengths above `maxContainerElements` | lengths are read as unsigned 32-bit; any value exceeding the configured limit is rejected |
 | Unnamed root with a type other than `0A` | network format conventionally uses a compound root; this codec accepts any unnamed root type |
 | String longer than 65535 encoded bytes | the length field is `u16` |
 
