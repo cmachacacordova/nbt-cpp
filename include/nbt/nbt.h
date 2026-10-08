@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
@@ -28,7 +29,6 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -152,7 +152,7 @@ public:
   using Double = double;
   using String = std::string;
   using List = std::variant<End, Array<Tag>, Array<Byte>, Array<Short>, Array<Int>, Array<Long>, Array<Float>, Array<Double>, Array<String>>;
-  using Compound = std::unordered_map<String, Tag>;
+  using Compound = std::map<String, Tag>;
   using ByteArray = Array<Byte>;
   using IntArray = Array<Int>;
   using LongArray = Array<Long>;
@@ -1020,7 +1020,7 @@ public:
       return values;
     }
 
-    [[nodiscard]] std::unordered_map<std::string, TagView> decodeCompound() const {
+    [[nodiscard]] std::map<std::string, TagView> decodeCompound() const {
       auto owner = owner_.lock();
       if (owner == nullptr) {
         throw Exception("Document not found", index_);
@@ -1030,8 +1030,7 @@ public:
         throw std::bad_variant_access();
       }
       auto childCount = entry.childCount;
-      std::unordered_map<std::string, TagView> values;
-      values.reserve(static_cast<std::size_t>(childCount));
+      std::map<std::string, TagView> values;
       std::uint32_t childIndex = entry.firstChild;
       for (std::uint32_t index = 0; index < childCount; index++) {
         const auto &subEntry = node(owner, childIndex);
@@ -1791,7 +1790,6 @@ private:
 
   [[nodiscard]] NBT_NS Tag readCompound(const NBT_NS Node &node) const {
     NBT_NS Tag::Compound values;
-    values.reserve(node.childCount);
     std::uint32_t childIndex = node.firstChild;
     for (std::size_t index = 0; index < node.childCount; ++index) {
       const auto &childNode = nodes_[childIndex];
