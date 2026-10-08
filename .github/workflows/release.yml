@@ -78,19 +78,41 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
 
       - name: Create source package
         shell: bash
         run: |
           pkg="nbt-cpp-${{ github.ref_name }}"
           mkdir -p "$pkg"
-          cp -r CMakeLists.txt cmake include examples tests ports vcpkg.json vcpkg-configuration.json LICENSE README.md docs "$pkg/"
+          cp -r CMakeLists.txt cmake include examples tests vcpkg.json vcpkg-configuration.json LICENSE README.md docs "$pkg/"
           tar -czf "$pkg-src.tar.gz" "$pkg"
+          zip -rq "$pkg-src.zip" "$pkg"
           rm -rf "$pkg"
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          previous=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            git log "$previous"..HEAD --pretty=format:"- %s" > release_notes.md
+          else
+            git log --pretty=format:"- %s" > release_notes.md
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: nbt-cpp-*.tar.gz
+          files: |
+            nbt-cpp-*-src.tar.gz
+            nbt-cpp-*-src.zip
+          body_path: release_notes.md
           draft: false
-          generate_release_notes: true
+          generate_release_notes: false
