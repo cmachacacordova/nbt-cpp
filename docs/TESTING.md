@@ -12,7 +12,7 @@ Tests validate observable behavior through the public API rather than implementa
 - Encoding, parsing, materialization, and round trips for every NBT type.
 - Named and unnamed root tags (file and network formats), including re-encoding with the opposite flag.
 - Borrowed input, owned input, and incremental accumulation with `append`.
-- Lazy views, iteration, arrays, and document/view lifetimes.
+- Lazy views (`TagView`), materialization, container navigation, arrays, and document/view lifetimes.
 - SNBT, filesystem access, and None, Gzip, and Zlib compression.
 - Truncated and malformed input, error offsets, and resource limits.
 - Canonical fixtures, interoperability, real Minecraft data, fuzzing, and performance as they are added.
@@ -43,7 +43,7 @@ Floating-point values should be compared by representation when the contract req
 ## Rules for new tests
 
 1. Test public, observable behavior rather than private fields or functions.
-2. Prefer integration paths such as `Tag -> encode -> parse -> View -> materialize` and `bytes -> parse -> encode`.
+2. Prefer integration paths such as `Tag -> encode -> parse -> materialize` and `bytes -> parse -> encode`.
 3. Keep core and utilities tests separate.
 4. Use independent golden vectors when checking exact bytes.
 5. Test every relevant cut point for truncated input and distinguish `NeedMoreData` from malformed-input errors.
@@ -68,7 +68,6 @@ Before adding new conformance vectors, explicitly document:
 
 - The resolved `named` flag policy: any input is stored as a named tag, and `encode` chooses whether to emit the name.
 - The `NBT_STRICT_MODE` boundary: strict builds assume well-formed input (exceptions or UB on violations); non-strict builds ignore invalid values during encoding. Tests should cover both when the build defines the macro.
-- The current absence of `encodeView()`; do not document or test an API that does not exist.
 - The policy for invalid UTF-8.
 - Preservation of NaN and non-finite values in SNBT.
 - Concatenated Gzip members.
@@ -80,7 +79,7 @@ Before adding new conformance vectors, explicitly document:
 
 1. Consolidate helpers and canonical vectors without introducing mandatory dependencies.
 2. Complete conformance coverage for every type, File/Network formats, borrowed/owned input, and round trips.
-3. Expand streaming, view, error, and limit coverage.
+3. Expand streaming, error, and limit coverage.
 4. Complete SNBT and I/O coverage, including filesystem and compression failures.
 5. Add real Minecraft fixtures and a reproducible interoperability corpus.
 6. Add fuzz smoke tests, sanitizers, and benchmarks outside strict functional CI thresholds.

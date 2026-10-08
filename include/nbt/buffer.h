@@ -1,7 +1,7 @@
 /**
  * @file buffer.h
  * @author Carlos Machaca (carloscordova96@hotmail.com)
- * @brief
+ * @brief Owning and non-owning byte buffer used by the NBT codec.
  * @version 0.1
  * @date 2026-09-28
  *
@@ -21,10 +21,16 @@
 #include <stdexcept>
 #include <utility>
 
+#ifndef NBT_NS
+#define NBT_NS ::nbt::
+#endif
+
 namespace nbt {
 
+/** @brief Internal helpers for buffer growth calculations. */
 namespace BufferUtils {
 
+/** @brief Round @p needed up to the next 64-byte block boundary. */
 [[nodiscard]] inline std::size_t growthSize(std::size_t needed) noexcept {
   constexpr std::size_t blockSize = 64;
   const auto remainder = needed % blockSize;
@@ -40,20 +46,27 @@ namespace BufferUtils {
 
 } // namespace BufferUtils
 
+/**
+ * @brief Move-only byte buffer supporting owned allocations and borrowed spans.
+ *
+ * When capacity is zero the buffer borrows external bytes (non-owning);
+ * when capacity is positive it owns a heap allocation managed through
+ * std::allocator<std::byte>.
+ */
 class Buffer {
 public:
   Buffer() = default;
 
-  Buffer(const Buffer &) = delete;
-  Buffer &operator=(const Buffer &) = delete;
+  Buffer(const NBT_NS Buffer &) = delete;
+  NBT_NS Buffer &operator=(const NBT_NS Buffer &) = delete;
 
-  Buffer(Buffer &&other) noexcept : data_{other.data_}, size_{other.size_}, capacity_{other.capacity_} {
+  Buffer(NBT_NS Buffer &&other) noexcept : data_{other.data_}, size_{other.size_}, capacity_{other.capacity_} {
     other.data_ = nullptr;
     other.size_ = 0;
     other.capacity_ = 0;
   }
 
-  Buffer &operator=(Buffer &&other) noexcept {
+  NBT_NS Buffer &operator=(NBT_NS Buffer &&other) noexcept {
     if (this != &other) {
       reset();
       data_ = other.data_;
@@ -66,9 +79,11 @@ public:
     return *this;
   }
 
+  /** @brief Borrow external bytes without copying (non-owning). */
   Buffer(std::span<const std::byte> view) : data_{const_cast<std::byte *>(view.data())}, size_{view.size_bytes()} {
   }
 
+  /** @brief Replace contents with a borrowed span. Frees any owned allocation. */
   Buffer &operator=(std::span<const std::byte> other) noexcept {
     reset();
     data_ = const_cast<std::byte *>(other.data());
@@ -76,6 +91,7 @@ public:
     return *this;
   }
 
+  /** @brief Allocate an owning buffer with at least @p capacity bytes. */
   explicit Buffer(std::size_t capacity) {
     const auto initial = std::max<std::size_t>(64, capacity);
     data_ = std::allocator_traits<std::allocator<std::byte>>::allocate(byteAlloc, initial);
@@ -88,6 +104,11 @@ public:
     }
   }
 
+  /**
+   * @brief Reserve writable space for at least @p min bytes after the current data.
+   * @return Pointer to the writable region and its available size, or {nullptr, 0} on failure.
+   */
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   std::pair<void *, std::size_t> preallocate(std::size_t min, std::size_t newAllocationSize = 64, std::size_t max = std::numeric_limits<std::size_t>::max()) {
     const auto allocatorMax = std::allocator_traits<std::allocator<std::byte>>::max_size(byteAlloc);
     const auto effectiveMax = std::min(max, allocatorMax);
@@ -131,6 +152,7 @@ public:
     return {data_ + size_, std::min(capacity_ - size_, effectiveMax - size_)};
   }
 
+  /** @brief Commit @p n bytes previously obtained from preallocate(). */
   void postallocate(std::size_t n) {
     if (n > (capacity_ - std::min(capacity_, size_))) [[unlikely]] {
       throw std::overflow_error("buffer postallocation exceeds capacity");
@@ -138,6 +160,7 @@ public:
     size_ += n;
   }
 
+  /** @brief Copy [begin, end) into the buffer, growing as needed. */
   void append(const std::byte *begin, const std::byte *end) {
     if (begin == end) {
       return;
@@ -155,7 +178,7 @@ public:
       }
     }
 
-    auto [buffer, available] = preallocate(length, BufferUtils::growthSize(length));
+    auto [buffer, available] = preallocate(length, NBT_NS BufferUtils::growthSize(length));
     if (buffer == nullptr || available < length) [[unlikely]] {
       throw std::bad_alloc{};
     }
@@ -164,13 +187,15 @@ public:
     postallocate(length);
   }
 
-  void swap(Buffer &other) noexcept {
+  /** @brief Exchange contents with @p other. */
+  void swap(NBT_NS Buffer &other) noexcept {
     using std::swap;
     swap(data_, other.data_);
     swap(size_, other.size_);
     swap(capacity_, other.capacity_);
   }
 
+  /** @brief Free any owned allocation and reset to an empty non-owning state. */
   void reset() noexcept {
     if (capacity_ > 0) {
       std::allocator_traits<std::allocator<std::byte>>::deallocate(byteAlloc, data_, capacity_);
@@ -201,7 +226,7 @@ public:
   }
 
   [[nodiscard]] const std::byte *end() const noexcept {
-    return size_ == 0 ? data_ : data_ + size_;
+    return data_ + size_;
   }
 
 private:

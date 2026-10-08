@@ -1,6 +1,6 @@
 # nbt-cpp
 
-`nbt-cpp` is a C++23 header-only codec for Java Edition NBT. The binary codec validates and indexes the complete structure when input is opened, while names, scalar values, strings and arrays are decoded on demand through lightweight views.
+`nbt-cpp` is a C++23 header-only codec for Java Edition NBT. The binary codec validates and indexes the complete structure when input is opened, and decodes it into an owning `nbt::Tag` tree on demand.
 
 ## Requirements
 
@@ -54,11 +54,12 @@ std::span<const std::byte> packetBytes = /* complete NBT message */;
 nbt::Nbt document = nbt::Nbt::parse(packetBytes);
 
 if (document.status() == nbt::Status::Complete) {
-  const auto health = document.root().find("health").as<nbt::Type::Int>();
+  const nbt::Tag root = document.materialize();
+  const auto health = std::get<nbt::Tag::Int>(root.find("health")->payload());
 }
 ```
 
-The source bytes must remain alive and unchanged while the document or any view is used. `document.ownsBytes()` is `false` for this input mode.
+The source bytes must remain alive and unchanged while the document is used. `document.ownsBytes()` is `false` for this input mode.
 
 ### Owned input
 
@@ -83,7 +84,7 @@ if (document.status() == nbt::Status::NeedMoreData) {
 }
 
 if (document.valid()) {
-  const auto root = document.root();
+  const nbt::Tag root = document.materialize();
 }
 ```
 
@@ -107,24 +108,25 @@ auto networkBytes = document.encode(false);
 
 The parser applies configurable safety limits through `Options`: maximum depth, container elements, total nodes and input bytes. Trailing bytes beyond the validated root are accepted and retained in `document.bytes()`; `document.encode()` writes only the valid NBT portion.
 
-## Lazy views and materialization
+## Views and materialization
 
-`document.root()` returns an `nbt::Nbt::View`. A view is valid only while its originating document remains alive, unmoved and attached to the same input.
+`document.root()` returns an `nbt::TagView`, a non-owning lazy view valid only while its document remains alive and unmoved:
 
 ```cpp
 auto root = document.root();
-auto player = root.find("player");
-auto health = player.find("health").as<nbt::Type::Int>();
+auto health = root.find("player").find("health").as<nbt::Type::Int>();
 ```
 
-`View` supports:
+`TagView` supports `type()`, `elementType()`, `name()`, `size()`, `empty()`, `operator[]`, `child(index)`, `find(name)` and range iteration. `as<Type>()` decodes scalars, returns `std::string_view` for strings and `std::span<const std::byte>` over the raw big-endian bytes for arrays; `as<Type::List>()`/`as<Type::Compound>()` return the same `TagView` type.
 
-- `type()`, `elementType()` and `name()` metadata access.
-- `as<Type>()` for scalar values, strings, byte arrays, integer-array views and container views.
-- `size()`, `empty()`, `operator[]`, `child(index)`, `find(name)` and range iteration for lists and compounds.
-- `materialize()` to create an owning `nbt::Tag` subtree.
+Converting a view produces an owning `nbt::Tag` tree independent of the document (`document.materialize()` converts the whole root):
 
-Integer arrays are exposed as lazy `IntArrayView` and `LongArrayView` values. Byte arrays are exposed as `std::span<const std::byte>`. Call `document.materialize()` to create an owning tree for the complete document.
+```cpp
+const nbt::Tag root = document.materialize();
+const auto health = std::get<nbt::Tag::Int>(root.find("health")->payload());
+```
+
+`Tag` exposes `name()`, `type()`, `elementType()`, `payload()`, `size()`, `find(name)` and `depth()`. List and compound children live in the `Tag::Container` alternative of `payload()`; arrays are owning `Tag::ByteArray`, `Tag::IntArray` and `Tag::LongArray` vectors.
 
 ## Encoding
 
@@ -177,11 +179,11 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-CTest runs the core codec suite and, when utilities are enabled, a separate utilities suite. The programs under `examples/` are usage demonstrations and are built by CMake, but are not registered as tests. They cover lazy parsing, fragmented buffers, owning-tree construction, network NBT, view queries, gzip loading and SNBT.
+CTest runs the core codec suite and, when utilities are enabled, a separate utilities suite. The programs under `examples/` are usage demonstrations and are built by CMake, but are not registered as tests. They cover incremental parsing, fragmented buffers, owning-tree construction, network NBT, gzip loading and SNBT.
 
 The current test sources are organized as follows:
 
-- `tests/nbt_tests.cpp`: core construction, parsing, views, encoding, file/network formats and malformed-input tests.
+- `tests/nbt_tests.cpp`: core construction, parsing, materialization, encoding, file/network formats and malformed-input tests.
 - `tests/utilities_tests.cpp`: SNBT and filesystem/compression round-trip tests.
 - `examples/`: standalone usage programs that are intentionally independent from CTest.
 

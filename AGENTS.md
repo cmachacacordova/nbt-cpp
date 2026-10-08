@@ -4,7 +4,7 @@
 
 - `nbt-cpp` is a C++23 header-only Java Edition NBT codec.
 - The core public headers are `include/nbt/nbt.h` and `include/nbt/buffer.h`.
-- `nbt::Nbt` is an alias for `nbt::NbtParser<nbt::Buffer>`; `NbtParser<BufferT>` also supports a compatible custom buffer type.
+- `nbt::Nbt` is an alias for `nbt::NbtParser<nbt::Buffer>`; `NbtParser<nbt::Buffer>` also supports a compatible custom buffer type.
 - The core codec has no required third-party dependencies.
 - `include/nbt/utilities.h` provides optional SNBT, filesystem and compression helpers through `nbt::NbtUtilities`; it requires ZLIB.
 - CMake exports `nbt::nbt` for the core and `nbt::utilities` for optional helpers. Preserve `find_package(nbt-cpp CONFIG REQUIRED)` compatibility.
@@ -16,14 +16,13 @@
 - Namespace-level types: `nbt::Type`, `nbt::Status`, `nbt::Options`, `nbt::Exception`, `nbt::Tag`, `nbt::Buffer` and `nbt::Nbt`.
 - Parse borrowed bytes without copying: `Nbt::parse(std::span<const std::byte>, options)`.
 - Parse a contiguous container by copying it into the internal buffer: `Nbt::parse(container, options)`.
-- Accumulate owned fragments with `document.append(chunk, named)`; there is no separate `feed` API.
-- Inspect state with `status()`, `complete()`, `ownsBytes()`, `bytes()` and `clear()`.
-- Obtain a lazy root view with `document.root()`.
-- Materialize an owning tree with `document.materialize()` or `view.materialize()`.
-- Encode to a new buffer with `document.encode(named)` or append encoded data to an existing `BufferT` with `document.encode(output, named)`.
-- `document.bytes()` exposes the current internal or borrowed bytes. There is no `encodeView()` API.
+- Accumulate owned fragments with `document.append(chunk)`; there is no separate `feed` API. A default-constructed document treats appended bytes as unnamed. Only `parse`/`parseAtMost` configure named input through `Options::named`, and subsequent `append` calls preserve that mode.
+- Inspect state with `status()`, `valid()`, `ownsBytes()`, `bytes()` and `clear()`.
+- Obtain a lazy root view with `document.root()` (`nbt::TagView`, alias of `nbt::Nbt::TagView`).
+- Decode an owning tree with `document.materialize()` or by converting a view via `TagView::operator Tag()`.
+- Encode to a new buffer with `document.encode(named)` or append encoded data to an existing `nbt::Buffer` with `document.encode(output, named)`.
+- `document.bytes()` exposes the current internal or borrowed bytes.
 - `encode(named)` and `parse`/`append` with `Options::named` control the root name; `nbt::Source` no longer exists.
-- `nbt::NbtView` aliases `nbt::Nbt::View`.
 
 ## Parsing and validation behavior
 
@@ -37,18 +36,22 @@
 - `encode(false)` excludes the root name even if the input carried one; `encode(true)` emits the stored (possibly empty) name.
 - With `NBT_STRICT_MODE` defined the encoder assumes well-formed input (exceptions or UB on violations); without it, invalid values are ignored during encoding — the size computation mirrors the same filtering.
 - `append` copies each fragment into `Buffer`, revalidates the accumulated input and owns the resulting bytes.
-- `parse(span)` borrows the caller's bytes and does not extend their lifetime; documents and views must not outlive or move away from the source/document they reference.
+- `parse(span)` borrows the caller's bytes and does not extend their lifetime; documents must not outlive the source they reference. Materialized `Tag` trees are owning and independent.
 - The structural index stores offsets and node links, not pointers into individual values.
 - Numeric values are encoded and decoded big-endian.
 
-## Views and owning values
+## Lazy views
 
-- `Nbt::View` exposes `type()`, `elementType()`, `name()`, `size()`, `empty()`, `operator[]`, `child(index)`, `find(name)`, `begin()`/`end()`, `as<Type>()` and `materialize()`.
-- `as<Type::ByteArray>()` returns `std::span<const std::byte>` into the source buffer.
-- `as<Type::IntArray>()` and `as<Type::LongArray>()` return lazy big-endian array views with `size()`, indexing and iteration.
-- `as<Type::List>()` and `as<Type::Compound>()` return a container-capable `View`.
-- `find` and indexed `child` traversal follow sibling links and are O(index) per access; avoid repeated indexed lookup in hot loops when range iteration is sufficient.
-- `nbt::Tag` owns names and payloads. Its payload variant contains scalar types, `std::string`, `std::vector<Tag>`, `std::vector<std::int8_t>`, `std::vector<std::int32_t>` and `std::vector<std::int64_t>`.
+- `Nbt::TagView` is the single non-owning view type over the validated bytes: `type()`, `elementType()`, `name()`, `size()`, `empty()`, `child(index)`, `operator[]`, `find(name)`, `begin()`/`end()`, `as<Type>()` and `operator Tag()`.
+- `as<Type>()` decodes scalars to values, `Type::String` returns `std::string_view`, arrays return `std::span<const std::byte>` over the raw big-endian element bytes, and `Type::List`/`Type::Compound` return the same `TagView` (there are no separate view types).
+- Views must not outlive the document; `operator Tag()` materializes an owning subtree.
+- Documents built from a `Tag` have no bytes to view: `root()` throws for them; `materialize()` still works.
+
+## Owning values
+
+- `nbt::Tag` owns names and payloads and exposes `name()`, `type()`, `elementType()`, `payload()`, `size()`, `find(name)` and `depth()`.
+- Its payload variant contains scalar types, `std::string`, `std::vector<Tag>` (`Tag::Container`), `std::vector<std::int8_t>`, `std::vector<std::int32_t>` and `std::vector<std::int64_t>`.
+- `find` is a linear lookup over the children of a List or Compound payload and returns `const Tag*`.
 - `nbt::tag_literals` provides numeric/value literals (`_tb`, `_ts`, `_ti`, `_tl`, `_tf`, `_td`), string literals (`_tgs`/`_ts`) and `name | value` helpers; prefer `std::string` or `std::string_literals` for names and string payloads when a normal string constructor is available.
 
 ## Optional utilities
@@ -90,14 +93,13 @@ Run `git diff --check` before completing changes. Do not modify unrelated workin
 - Test public behavior through core and utilities suites; do not use examples as tests or register example executables with CTest.
 - Java Edition big-endian NBT is supported. Bedrock little-endian, Bedrock network/VarInt and private external formats are out of scope unless a separate implementation is added.
 - Keep core tests independent of ZLIB and preserve builds with `NBT_CPP_BUILD_UTILITIES` both ON and OFF.
-- Cover named and unnamed root formats, borrowed/owned/incremental input, lazy views, materialization, round-trips, malformed/truncated input and resource limits.
+- Cover named and unnamed root formats, borrowed/owned/incremental input, materialization, round-trips, malformed/truncated input and resource limits.
 - For canonical values include scalar limits, signed zero/non-finite floating-point cases where supported, empty and boundary-sized arrays/strings, nested lists/compounds and embedded NUL strings.
 - Use independent golden vectors for exact bytes, and clean up temporary files created by filesystem tests.
 - Verify Debug and Release, strict warnings, package consumption through `find_package(nbt-cpp CONFIG REQUIRED)` where relevant, and `git diff --check`.
 
 ## Agent implementation notes
 
-- `Node` stores byte offsets (`begin`, `end`, `payload`) and child/sibling links. Tag names are not kept separately; they are reconstructed from the input bytes following the Java Edition NBT layout. For a **named** tag the on-wire layout is `[type:1][name_length:2][name:N]`, so the name bytes lie between `begin + 3` and `payload`. For **unnamed** tags — list elements and unnamed roots — there is no name header, so the payload follows the type byte directly. Any helper that reconstructs a name from the offsets must guard that case.
-- `View::name()` delegates to `NbtParser::nodeName()`. When changing offset handling, keep both in sync and test `materialize()` on lists/arrays and unnamed roots, not just named compounds.
+- `Node` stores byte offsets (`begin`, `end`, `payload`) and child/sibling links. Tag names are not kept separately; they are reconstructed from the input bytes following the Java Edition NBT layout. For a **named** tag the on-wire layout is `[type:1][name_length:2][name:N]`, so the name bytes lie between `begin + 3` and `payload`. For **unnamed** tags — list elements and unnamed roots — there is no name header, so the payload follows the type byte directly. `NbtParser::nodeName()` guards that case and is shared by `encode()`, `materialize()` and `TagView::name()`.
 - The index supports incremental reuse across `append` revalidations: `Node::end`/`payload` stay at `Node::END` while incomplete, `beginNode` replays nodes in preorder through `next_node_`, and a completed node is skipped via `end`/`nextSibling`. `parseNode` centralizes this: `named` controls the root/compound-child name header and `declared` supplies the list element type (no per-element type byte on the wire). Never hold a `Node&` across a call that can push into `nodes_` — the vector may reallocate.
 - The byte-comparison helper in the test files (`equalBytes`) is kept as a local helper because `nbt::Buffer`, `std::span`, `std::array` and `std::vector` do not share a single `operator==`. Do not replace it with plain `EXPECT_EQ` unless an explicit common container is created first. Prefer `EXPECT_PRED_FORMAT2` if better failure diagnostics are needed.

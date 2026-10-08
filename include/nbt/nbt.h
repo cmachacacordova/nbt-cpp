@@ -1,20 +1,8 @@
 /**
  * @file nbt.h
  * @author Carlos Machaca (carloscordova96@hotmail.com)
- * @brief Header-only Java Edition NBT codec: structural validation, lazy non-owning views
- *        and big-endian encoding.
- *
- * Error policy:
- * - Malformed input is reported through nbt::Exception with the offending byte offset.
- * - Truncated input never fails: it is reported as nbt::Status::NeedMoreData so the
- *   document can be completed later with NbtParser::append.
- * - Encoding has two modes selected by the NBT_STRICT_MODE macro. In strict mode the
- *   caller guarantees standard-compliant input and the library performs no value
- *   validation (mismatches produce exceptions or undefined behavior); the encoded
- *   size is the exact computed size. In non-strict mode values that do not match
- *   their declared Tag::type or list element type are ignored during encoding, and
- *   the size computation mirrors the same filtering so the buffer is exact.
- *
+ * @brief Header-only Java Edition NBT codec: structural validation,
+ *        materialization into owning tags and big-endian encoding.
  * @version 0.1
  * @date 2026-09-16
  *
@@ -33,58 +21,66 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "nbt/buffer.h"
 
+#ifndef NBT_NS
+#define NBT_NS ::nbt::
+#endif
+
 namespace nbt {
 
-using namespace std::string_literals;
+enum class Type : std::uint8_t;
 
 namespace utils {
 
-constexpr std::size_t MAX_COUNT = static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)()); ///< Maximum element count.
-constexpr std::size_t MAX_BYTES = (std::numeric_limits<std::size_t>::max)();                             ///< Byte-size saturation bound.
+constexpr std::size_t MAX_COUNT = static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)());
 constexpr std::size_t MAX_STR_SIZE = static_cast<std::size_t>((std::numeric_limits<std::uint16_t>::max)());
 constexpr std::uint32_t NO_NODE = (std::numeric_limits<std::uint32_t>::max)();
 
+template <std::size_t s>
+struct BitsType;
+
+template <NBT_NS Type t>
+struct TypeTraits;
+
 template <typename T>
-using nbt_number = std::conditional_t<sizeof(T) == 2, std::uint16_t, std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>>;
+struct TypeOf;
+
+template <NBT_NS Type type, NBT_NS Type elementType>
+struct UnderlyingType;
+
 } // namespace utils
 
 /**
- * @brief Common base for NBT exceptions.
- *
- * Carries the byte offset where the problem was detected and an optional nested
- * exception for errors that wrap lower-level failures.
+ * @brief Common base for NBT exceptions. Carries the byte offset where the
+ *        problem was detected and an optional nested exception.
  */
 class BaseException {
 public:
-  BaseException(std::size_t offset) : offset_(offset) {
+  explicit BaseException(std::size_t offset) : offset_(offset) {
   }
 
   BaseException(std::size_t offset, const std::exception_ptr &nested) : offset_(offset), nested_(nested) {
   }
 
-  /**
-   * @brief Byte offset in the input where the error was detected.
-   */
+  virtual ~BaseException() = default;
+
   [[nodiscard]] std::size_t offset() const noexcept {
     return offset_;
   }
 
-  /**
-   * @brief Nested exception that caused this error, if any.
-   */
   [[nodiscard]] const std::exception_ptr &nested() const noexcept {
     return nested_;
   }
@@ -97,790 +93,960 @@ private:
 /**
  * @brief Fatal NBT error: malformed input, violated limits or an invalid root tag.
  */
-class Exception : public BaseException, public std::runtime_error {
+class Exception : public NBT_NS BaseException, public std::runtime_error {
 public:
-  Exception(const std::string &message, std::size_t offset) : BaseException(offset), std::runtime_error(message) {
+  Exception(const std::string &message, std::size_t offset) : NBT_NS BaseException(offset), std::runtime_error(message) {
   }
 
-  Exception(const std::string &message, std::size_t offset, const std::exception_ptr &nested) : BaseException(offset, nested), std::runtime_error(message) {
+  Exception(const std::string &message, std::size_t offset, const std::exception_ptr &nested) : NBT_NS BaseException(offset, nested), std::runtime_error(message) {
   }
 };
 
 /**
- * @brief Non-fatal truncation signal. Thrown internally when the input ends before a
- *        complete document can be validated; surfaced to callers as Status::NeedMoreData.
+ * @brief Non-fatal truncation signal. Thrown internally when the input ends
+ *        before a complete document can be validated; surfaced to callers as
+ *        nbt::Status::NeedMoreData.
  */
-class NeedMoreDataException : public BaseException, public std::out_of_range {
+class NeedMoreDataException : public NBT_NS BaseException, public std::out_of_range {
 public:
-  NeedMoreDataException(const std::string &message, std::size_t offset) : BaseException(offset), std::out_of_range(message) {
+  NeedMoreDataException(const std::string &message, std::size_t offset) : NBT_NS BaseException(offset), std::out_of_range(message) {
   }
 
-  NeedMoreDataException(const std::string &message, std::size_t offset, const std::exception_ptr &nested) : BaseException(offset, nested), std::out_of_range(message) {
+  NeedMoreDataException(const std::string &message, std::size_t offset, const std::exception_ptr &nested) : NBT_NS BaseException(offset, nested), std::out_of_range(message) {
   }
 };
 
-/**
- * @brief NBT tag type identifiers, matching the Java Edition wire ids.
- */
+/** @brief NBT tag type identifiers matching the Java Edition wire ids. */
 enum class Type : std::uint8_t { End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray };
 
-/**
- * @brief Document state: Empty (no input), Complete (validated) or NeedMoreData
- *        (truncated, more bytes required).
- */
+/** @brief Document state after validation. */
 enum class Status : std::uint8_t { Empty, Complete, NeedMoreData };
 
-/**
- * @brief Resource limits enforced while validating input.
- */
+/** @brief Resource limits enforced while validating input. */
 struct Options {
-  std::size_t maxDepth{512};                                                       ///< Maximum nesting depth.
-  std::size_t maxContainerElements{static_cast<std::size_t>(16U * 1024U * 1024U)}; ///< Maximum children per list, compound or array.
-  std::size_t maxTotalNodes{static_cast<std::size_t>(64U * 1024U * 1024U)};        ///< Maximum total indexed nodes.
-  std::size_t maxInputBytes{static_cast<std::size_t>(1024U * 1024U * 1024U)};      ///< Maximum accepted input size in bytes.
-  bool named{true};                                                                ///< Whether the input root tag is expected to carry a name.
+  std::size_t maxDepth{512};
+  std::size_t maxContainerElements{static_cast<std::size_t>(16U * 1024U * 1024U)};
+  std::size_t maxTotalNodes{static_cast<std::size_t>(64U * 1024U * 1024U)};
+  std::size_t maxInputBytes{static_cast<std::size_t>(1024U * 1024U * 1024U)};
+  bool named{true};
 };
 
 /**
  * @brief Owning representation of a single NBT tag.
  *
- * A Tag stores a name, an NBT type, an optional list element type and a payload
- * that matches the selected type. Standard C++ scalar values and containers can
- * be converted directly to a Tag through the value constructors.
- *
- * @par Construction rules
- * - Standard C++ scalar and string-like values, as well as @c std::vector
- *   containers, are converted to the corresponding NBT type.
- * - Tag names are always accepted and never validated; they cannot cause the
- *   constructor to fail.
- * - When a Tag is inserted as a child of a TAG_List or of a typed array
- *   (TAG_Byte_Array, TAG_Int_Array, TAG_Long_Array), its name is ignored during
- *   encoding and parsing.
- * - A Tag whose @ref type is Type::End represents an invalid/empty tag and
- *   cannot be encoded as a root tag.
- * - A @c std::vector<Tag> constructed without an explicit element type is
- *   treated as a TAG_Compound.
- * - Passing Type::End as the explicit element type of a list ignores the supplied
- *   children and constructs an empty list.
- * - With NBT_STRICT_MODE defined, encoding assumes well-formed input and skips all
- *   value validation; violations produce exceptions or undefined behavior. Without
- *   it, invalid values (mismatched payloads, wrong list element types, TAG_End
- *   children) are ignored during encoding.
+ * Stores an NBT type, an optional list element type and a payload variant.
+ * C++ scalars, strings and containers convert directly through value constructors.
+ * A tag whose type is Type::End is empty and cannot be encoded as a root.
  */
-struct Tag {
-
-  using Byte = std::int8_t;            ///< Signed 8-bit TAG_Byte payload.
-  using Short = std::int16_t;          ///< Signed 16-bit TAG_Short payload.
-  using Int = std::int32_t;            ///< Signed 32-bit TAG_Int payload.
-  using Long = std::int64_t;           ///< Signed 64-bit TAG_Long payload.
-  using Float = float;                 ///< IEEE-754 TAG_Float payload.
-  using Double = double;               ///< IEEE-754 TAG_Double payload.
-  using String = std::string;          ///< Owning UTF-8 TAG_String payload.
-  using ByteArray = std::vector<Byte>; ///< Owning TAG_Byte_Array payload.
-  using IntArray = std::vector<Int>;   ///< Owning TAG_Int_Array payload.
-  using LongArray = std::vector<Long>; ///< Owning TAG_Long_Array payload.
-  using Container = std::vector<Tag>;  ///< Owning TAG_List or TAG_Compound payload.
-
-  using Payload = std::variant<std::monostate, Byte, Short, Int, Long, Float, Double, String, Container, ByteArray, IntArray, LongArray>;
-
-  /**
-   * @brief Whether @p T is a valid element type for vector-based constructors.
-   */
+class Tag final {
+public:
   template <typename T>
-  static constexpr bool isElementType = std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>, std::is_same<T, String>, std::is_same<T, Tag>>;
+  using Array = std::vector<T>;
 
-  std::string name;            ///< Tag name. Ignored for list and array elements.
-  Type type{Type::End};        ///< NBT type of this tag.
-  Type elementType{Type::End}; ///< Element type; only meaningful when @ref type is Type::List.
-  Payload payload;             ///< Owned payload matching @ref type.
+  using End = std::monostate;
+  using Byte = std::int8_t;
+  using Short = std::int16_t;
+  using Int = std::int32_t;
+  using Long = std::int64_t;
+  using Float = float;
+  using Double = double;
+  using String = std::string;
+  using List = std::variant<End, Array<Tag>, Array<Byte>, Array<Short>, Array<Int>, Array<Long>, Array<Float>, Array<Double>, Array<String>>;
+  using Compound = std::unordered_map<String, Tag>;
+  using ByteArray = Array<Byte>;
+  using IntArray = Array<Int>;
+  using LongArray = Array<Long>;
 
-  /**
-   * @brief Construct an unnamed TAG_End tag.
-   */
+  using Payload = std::variant<End, Byte, Short, Int, Long, Float, Double, ByteArray, String, List, Compound, IntArray, LongArray>;
+
+  static constexpr std::size_t MAX_DEPTH{512};
+
+  template <typename T>
+  static constexpr bool isNBTNumber = std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>>;
+
+  template <typename T>
+  static constexpr bool isElementType = std::disjunction_v<std::bool_constant<isNBTNumber<T>>, std::is_same<T, String>, std::is_same<T, Tag>>;
+
+  template <typename T>
+  static constexpr bool isNBTType = std::disjunction_v<std::bool_constant<isElementType<T>>, std::is_same<T, End>, std::is_same<T, ByteArray>, std::is_same<T, List>, std::is_same<T, Compound>, std::is_same<T, IntArray>, std::is_same<T, LongArray>>;
+
   Tag() = default;
 
-  /**
-   * @brief Copy an existing tag and assign a new name.
-   * @param name The tag name.
-   * @param value The tag to copy.
-   */
-  Tag(std::string_view name, const Tag &value) : name(name) {
-    this->payload = value.payload;
-    this->type = value.type;
-    this->elementType = value.elementType;
-  }
+  Tag(const NBT_NS Tag &) = default;
+  Tag(NBT_NS Tag &&) = default;
+  NBT_NS Tag &operator=(const NBT_NS Tag &) = default;
+  NBT_NS Tag &operator=(NBT_NS Tag &&) = default;
 
-  /**
-   * @brief Move an existing tag and assign a new name.
-   * @param name The tag name.
-   * @param value The tag to move from.
-   */
-  Tag(std::string_view name, Tag &&value) : name(name), type(value.type), elementType(value.elementType), payload(std::move(value.payload)) {
-  }
-
-  /**
-   * @brief Construct an unnamed numeric scalar tag.
-   * @tparam T One of the supported numeric scalar types (Byte, Short, Int, Long, Float, Double).
-   * @param value The scalar value to store.
-   */
   template <typename T>
-    requires std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>>
-  Tag(T value) : Tag("", std::move(value)) {
+    requires(NBT_NS Tag::isNBTNumber<T>)
+  Tag(T value) : type_(NBT_NS utils::TypeOf<T>::value), payload_(value) {
   }
 
-  /**
-   * @brief Construct a named numeric scalar tag.
-   * @tparam T One of the supported numeric scalar types (Byte, Short, Int, Long, Float, Double).
-   * @param name The tag name.
-   * @param value The scalar value to store.
-   */
+  Tag(std::string_view value) : type_(NBT_NS Type::String), payload_(std::string(value)) {
+  }
+
   template <typename T>
-    requires std::disjunction_v<std::is_same<T, Byte>, std::is_same<T, Short>, std::is_same<T, Int>, std::is_same<T, Long>, std::is_same<T, Float>, std::is_same<T, Double>>
-  Tag(std::string_view name, T value) : name(name) {
-    if constexpr (std::is_same_v<T, Byte>) {
-      this->payload = std::move(value);
-      this->type = Type::Byte;
-    } else if constexpr (std::is_same_v<T, Short>) {
-      this->payload = std::move(value);
-      this->type = Type::Short;
-    } else if constexpr (std::is_same_v<T, Int>) {
-      this->payload = std::move(value);
-      this->type = Type::Int;
-    } else if constexpr (std::is_same_v<T, Long>) {
-      this->payload = std::move(value);
-      this->type = Type::Long;
-    } else if constexpr (std::is_same_v<T, Float>) {
-      this->payload = std::move(value);
-      this->type = Type::Float;
-    } else if constexpr (std::is_same_v<T, Double>) {
-      this->payload = std::move(value);
-      this->type = Type::Double;
-    }
+    requires std::disjunction_v<std::is_same<T, NBT_NS Tag::Byte>, std::is_same<T, NBT_NS Tag::Int>, std::is_same<T, NBT_NS Tag::Long>>
+  Tag(std::initializer_list<T> elements, bool backwardCompatible = false) : Tag(std::vector<T>(elements), backwardCompatible) {
   }
 
-  /**
-   * @brief Construct an unnamed TAG_String tag from a string-like value.
-   * @tparam S A type convertible to std::string_view.
-   * @param value The string payload.
-   */
-  template <typename S>
-    requires std::is_constructible_v<std::string_view, S &&>
-  Tag(const S &value) : Tag(std::string_view(value)) {
-  }
-
-  /**
-   * @brief Construct a named TAG_String tag from a string-like value.
-   * @tparam S A type convertible to std::string_view.
-   * @param name The tag name.
-   * @param value The string payload.
-   */
-  template <typename S>
-    requires std::is_constructible_v<std::string_view, S &&>
-  Tag(std::string_view name, const S &value) : Tag(name, std::string_view(value)) {
-  }
-
-  /**
-   * @brief Construct an unnamed TAG_String tag from a string view.
-   * @param value The string payload.
-   */
-  Tag(std::string_view value) : Tag("", value) {
-  }
-
-  /**
-   * @brief Construct a named TAG_String tag from a string view.
-   * @param name The tag name.
-   * @param value The string payload.
-   */
-  Tag(std::string_view name, std::string_view value) : name(name), type(nbt::Type::String), payload(std::string(value)) {
-  }
-
-  /**
-   * @brief Construct an unnamed typed-array, list or compound tag from an initializer list.
-   * @tparam T The element type. See the std::vector overload for the type mapping.
-   * @param elements The elements to store.
-   */
   template <typename T>
-    requires isElementType<T>
-  Tag(std::initializer_list<T> elements) : Tag("", elements) {
-  }
-
-  /**
-   * @brief Construct an unnamed typed-array, list or compound tag from a vector.
-   * @tparam T The element type. Byte, Int and Long produce typed arrays; Short, Float, Double and
-   *           String produce lists; Tag produces a compound.
-   * @param elements The elements to store.
-   */
-  template <typename T>
-    requires isElementType<T>
-  Tag(std::vector<T> elements) : Tag("", std::move(elements)) {
-  }
-
-  /**
-   * @brief Construct a named typed-array, list or compound tag from a range.
-   * @tparam R A range whose element type is one of the supported element types. Byte, Int and Long
-   *           produce typed arrays; Short, Float, Double and String produce lists; Tag produces a compound.
-   * @param name The tag name.
-   * @param elements The elements to store.
-   */
-  template <typename R>
-    requires isElementType<typename R::value_type>
-  Tag(std::string_view name, R elements) : name(name) {
-    using T = typename R::value_type;
-    if constexpr (std::is_same_v<T, Byte> || std::is_same_v<T, Int> || std::is_same_v<T, Long> || std::is_same_v<T, Tag>) {
-      this->payload = std::move(elements);
+    requires std::disjunction_v<std::is_same<T, NBT_NS Tag::Byte>, std::is_same<T, NBT_NS Tag::Int>, std::is_same<T, NBT_NS Tag::Long>>
+  Tag(NBT_NS Tag::Array<T> value, bool backwardCompatible = false) {
+    if constexpr (std::is_same_v<T, NBT_NS Tag::Byte>) {
+      this->type_ = backwardCompatible ? NBT_NS Type::List : NBT_NS Type::ByteArray;
+      this->elementType_ = NBT_NS Type::Byte;
+    } else if constexpr (std::is_same_v<T, NBT_NS Tag::Int>) {
+      this->type_ = backwardCompatible ? NBT_NS Type::List : NBT_NS Type::IntArray;
+      this->elementType_ = NBT_NS Type::Int;
     } else {
-      Tag::Container container;
-      std::ranges::transform(elements, std::back_inserter(container), [](auto &value) {
-        return Tag(value);
-      });
-      this->payload = std::move(container);
+      this->type_ = backwardCompatible ? NBT_NS Type::List : NBT_NS Type::LongArray;
+      this->elementType_ = NBT_NS Type::Long;
     }
-    if constexpr (std::is_same_v<T, Byte>) {
-      this->type = Type::ByteArray;
-    } else if constexpr (std::is_same_v<T, Short>) {
-      this->type = Type::List;
-      this->elementType = Type::Short;
-    } else if constexpr (std::is_same_v<T, Int>) {
-      this->type = Type::IntArray;
-    } else if constexpr (std::is_same_v<T, Long>) {
-      this->type = Type::LongArray;
-    } else if constexpr (std::is_same_v<T, Float>) {
-      this->type = Type::List;
-      this->elementType = Type::Float;
-    } else if constexpr (std::is_same_v<T, Double>) {
-      this->type = Type::List;
-      this->elementType = Type::Double;
-    } else if constexpr (std::is_same_v<T, String>) {
-      this->type = Type::List;
-      this->elementType = Type::String;
-    } else if constexpr (std::is_same_v<T, Tag>) {
-      this->type = Type::Compound;
+    if (backwardCompatible) {
+      this->payload_ = NBT_NS Tag::List(std::move(value));
+    } else {
+      this->payload_ = std::move(value);
     }
   }
 
-  /**
-   * @brief Construct an unnamed TAG_List with an explicit element type.
-   * @param type The element type of the list. Type::End constructs an empty list.
-   * @param value The list elements. Elements are ignored for Type::End; otherwise, the supplied
-   *              values are stored as-is and the caller is responsible for their correctness.
-   */
-  Tag(Type type, std::vector<Tag> value = {}) : Tag("", type, std::move(value)) {
+  template <typename T>
+    requires(isNBTType<T> && !std::disjunction_v<std::is_same<T, NBT_NS Tag::Byte>, std::is_same<T, NBT_NS Tag::Int>, std::is_same<T, NBT_NS Tag::Long>>)
+  Tag(std::initializer_list<T> elements) : Tag(std::vector<T>(elements)) {
   }
 
-  /**
-   * @brief Construct a named TAG_List with an explicit element type.
-   * @param name The tag name.
-   * @param type The element type of the list. Type::End constructs an empty list.
-   * @param value The list elements. Elements are ignored for Type::End; otherwise, the supplied
-   *              values are stored as-is and the caller is responsible for their correctness.
-   */
-  Tag(std::string_view name, Type type, std::vector<Tag> value = {}) : name(name), type(Type::List), elementType(type) {
-    if (type == Type::End) {
-      this->payload = Container{};
+  template <typename T>
+    requires(isNBTType<T> && !std::disjunction_v<std::is_same<T, NBT_NS Tag::Byte>, std::is_same<T, NBT_NS Tag::Int>, std::is_same<T, NBT_NS Tag::Long>>)
+  Tag(NBT_NS Tag::Array<T> elements) {
+    if constexpr (std::disjunction_v<std::is_same<T, NBT_NS Tag::Short>, std::is_same<T, NBT_NS Tag::Float>, std::is_same<T, NBT_NS Tag::Double>, std::is_same<T, NBT_NS Tag::String>>) {
+      this->type_ = NBT_NS Type::List;
+      if constexpr (std::is_same_v<T, NBT_NS Tag::Short>) {
+        this->elementType_ = NBT_NS Type::Short;
+      } else if constexpr (std::is_same_v<T, NBT_NS Tag::Float>) {
+        this->elementType_ = NBT_NS Type::Float;
+      } else if constexpr (std::is_same_v<T, NBT_NS Tag::Double>) {
+        this->elementType_ = NBT_NS Type::Double;
+      } else {
+        this->elementType_ = NBT_NS Type::String;
+      }
+      this->payload_ = NBT_NS Tag::List(std::move(elements));
+    } else if constexpr (std::is_same_v<T, NBT_NS Tag>) {
+      this->type_ = NBT_NS Type::List;
+      this->elementType_ = elements.empty() ? NBT_NS Type::End : elements.front().type_;
+      this->payload_ = std::move(elements);
+    } else if constexpr (!std::is_same_v<T, End>) {
+      NBT_NS Tag::Array<NBT_NS Tag> children;
+      children.reserve(elements.size());
+      for (auto &element : elements) {
+        children.emplace_back(std::move(element));
+      }
+      this->type_ = NBT_NS Type::List;
+      this->elementType_ = children.empty() ? NBT_NS Type::End : children.front().type_;
+      this->payload_ = std::move(children);
+    }
+  }
+
+  Tag(std::initializer_list<std::pair<const NBT_NS Tag::String, NBT_NS Tag>> elements) : Tag(NBT_NS Tag::Compound(elements)) {
+  }
+
+  Tag(NBT_NS Tag::Compound elements) : type_(NBT_NS Type::Compound), payload_(std::move(elements)) {
+  }
+
+  /** @brief NBT type of this tag. */
+  [[nodiscard]] NBT_NS Type type() const noexcept {
+    return type_;
+  }
+
+  /** @brief Set the NBT type. */
+  void type(NBT_NS Type type) noexcept {
+    type_ = type;
+  }
+
+  /** @brief Element type; only meaningful for List, ByteArray, IntArray, LongArray. */
+  [[nodiscard]] NBT_NS Type elementType() const noexcept {
+    return elementType_;
+  }
+
+  /** @brief Set the element type. */
+  void elementType(NBT_NS Type elementType) noexcept {
+    elementType_ = elementType;
+  }
+
+  /** @brief Owned payload variant matching type(). */
+  [[nodiscard]] const NBT_NS Tag::Payload &payload() const noexcept {
+    return payload_;
+  }
+
+  /** @brief Replace the payload. */
+  void payload(NBT_NS Tag::Payload payload) {
+    payload_ = std::move(payload);
+  }
+
+  /** @brief Find a child by name in a Compound payload. Returns nullptr if not found. */
+  [[nodiscard]] NBT_NS Tag *find(std::string_view name) {
+    if (std::holds_alternative<NBT_NS Tag::Compound>(payload_)) [[likely]] {
+      auto &payload = std::get<NBT_NS Tag::Compound>(payload_);
+      if (auto item = payload.find(std::string(name)); item != payload.end()) {
+        return &item->second;
+      }
+    }
+    return nullptr;
+  }
+
+  /** @brief Append a child to a list or typed-array payload. */
+  template <typename T>
+    requires(NBT_NS Tag::isNBTType<T>)
+  void add(T value) {
+    if constexpr (std::is_same_v<T, NBT_NS Tag>) {
+      addImpl(std::move(value));
+    } else {
+      addImpl(NBT_NS Tag(std::move(value)));
+    }
+  }
+
+  /** @brief Insert or replace a named child in a Compound payload. */
+  template <typename T>
+    requires(NBT_NS Tag::isNBTType<T>)
+  void add(std::string_view name, T value) {
+    if constexpr (std::is_same_v<T, NBT_NS Tag>) {
+      addImpl(name, std::move(value));
+    } else {
+      addImpl(name, NBT_NS Tag(std::move(value)));
+    }
+  }
+
+  /** @brief Number of direct children for container payloads, zero otherwise. */
+  [[nodiscard]] std::size_t size() const noexcept {
+    switch (type_) {
+    case NBT_NS Type::ByteArray:
+      return arrayCount<NBT_NS Tag::ByteArray>();
+    case NBT_NS Type::IntArray:
+      return arrayCount<NBT_NS Tag::IntArray>();
+    case NBT_NS Type::LongArray:
+      return arrayCount<NBT_NS Tag::LongArray>();
+    case NBT_NS Type::Compound:
+      return arrayCount<NBT_NS Tag::Compound>();
+    case NBT_NS Type::List: {
+      const auto *list = std::get_if<NBT_NS Tag::List>(&payload_);
+      if (list == nullptr) {
+        return 0;
+      }
+      switch (elementType_) {
+      case NBT_NS Type::Byte:
+        return listCount<NBT_NS Tag::Array<Byte>>(*list);
+      case NBT_NS Type::Short:
+        return listCount<NBT_NS Tag::Array<Short>>(*list);
+      case NBT_NS Type::Int:
+        return listCount<NBT_NS Tag::Array<Int>>(*list);
+      case NBT_NS Type::Long:
+        return listCount<NBT_NS Tag::Array<Long>>(*list);
+      case NBT_NS Type::Float:
+        return listCount<NBT_NS Tag::Array<Float>>(*list);
+      case NBT_NS Type::Double:
+        return listCount<NBT_NS Tag::Array<Double>>(*list);
+      case NBT_NS Type::String:
+        return listCount<NBT_NS Tag::Array<String>>(*list);
+      case NBT_NS Type::End:
+        return 0;
+      default:
+        return listCount<NBT_NS Tag::Array<NBT_NS Tag>>(*list);
+      }
+    }
+    default:
+      return 0;
+    }
+  }
+
+  /** @brief True when the tag is not TAG_End. */
+  operator bool() const {
+    return type_ != NBT_NS Type::End;
+  }
+
+private:
+  template <typename Container>
+  [[nodiscard]] std::size_t arrayCount() const noexcept {
+    const auto *values = std::get_if<Container>(&payload_);
+    return values == nullptr ? 0 : values->size();
+  }
+
+  template <typename Container>
+  [[nodiscard]] static std::size_t listCount(const List &list) noexcept {
+    const auto *values = std::get_if<Container>(&list);
+    return values == nullptr ? 0 : values->size();
+  }
+
+  void addImpl(NBT_NS Tag child) {
+    const NBT_NS Type childType = child.type_;
+    if (childType == NBT_NS Type::End) {
       return;
     }
-
-    this->payload = std::move(value);
+    if (this->type_ == NBT_NS Type::End) {
+      switch (childType) {
+      case NBT_NS Type::Byte: {
+        type_ = NBT_NS Type::ByteArray;
+        elementType_ = NBT_NS Type::Byte;
+        payload_ = NBT_NS Tag::ByteArray();
+        break;
+      }
+      case NBT_NS Type::Short: {
+        type_ = NBT_NS Type::List;
+        elementType_ = NBT_NS Type::Short;
+        payload_ = NBT_NS Tag::List(NBT_NS Tag::Array<NBT_NS Tag::Short>());
+        break;
+      }
+      case NBT_NS Type::Int: {
+        type_ = NBT_NS Type::IntArray;
+        elementType_ = NBT_NS Type::Int;
+        payload_ = NBT_NS Tag::IntArray();
+        break;
+      }
+      case NBT_NS Type::Long: {
+        type_ = NBT_NS Type::LongArray;
+        elementType_ = NBT_NS Type::Long;
+        payload_ = NBT_NS Tag::LongArray();
+        break;
+      }
+      case NBT_NS Type::Float: {
+        type_ = NBT_NS Type::List;
+        elementType_ = NBT_NS Type::Float;
+        payload_ = NBT_NS Tag::List(NBT_NS Tag::Array<NBT_NS Tag::Float>());
+        break;
+      }
+      case NBT_NS Type::Double: {
+        type_ = NBT_NS Type::List;
+        elementType_ = NBT_NS Type::Double;
+        payload_ = NBT_NS Tag::List(NBT_NS Tag::Array<NBT_NS Tag::Double>());
+        break;
+      }
+      case NBT_NS Type::String: {
+        type_ = NBT_NS Type::List;
+        elementType_ = NBT_NS Type::String;
+        payload_ = NBT_NS Tag::List(NBT_NS Tag::Array<NBT_NS Tag::String>());
+        break;
+      }
+      default: {
+        type_ = NBT_NS Type::List;
+        elementType_ = childType;
+        payload_ = NBT_NS Tag::List(NBT_NS Tag::Array<NBT_NS Tag>());
+        break;
+      }
+      }
+    }
+    switch (type_) {
+    case NBT_NS Type::ByteArray: {
+      if (childType != NBT_NS Type::Byte) {
+        return;
+      }
+      std::get<NBT_NS Tag::ByteArray>(payload_).push_back(std::get<NBT_NS Tag::Byte>(child.payload_));
+      return;
+    }
+    case NBT_NS Type::IntArray: {
+      if (childType != NBT_NS Type::Int) {
+        return;
+      }
+      std::get<NBT_NS Tag::IntArray>(payload_).push_back(std::get<NBT_NS Tag::Int>(child.payload_));
+      return;
+    }
+    case NBT_NS Type::LongArray: {
+      if (childType != NBT_NS Type::Long) {
+        return;
+      }
+      std::get<NBT_NS Tag::LongArray>(payload_).push_back(std::get<NBT_NS Tag::Long>(child.payload_));
+      return;
+    }
+    case NBT_NS Type::List:
+      if (childType != elementType_) {
+        return;
+      }
+      switch (elementType_) {
+      case NBT_NS Type::Short: {
+        std::get<NBT_NS Tag::Array<NBT_NS Tag::Short>>(std::get<NBT_NS Tag::List>(payload_)).push_back(std::get<NBT_NS Tag::Short>(child.payload_));
+        return;
+      }
+      case NBT_NS Type::Float: {
+        std::get<NBT_NS Tag::Array<NBT_NS Tag::Float>>(std::get<NBT_NS Tag::List>(payload_)).push_back(std::get<NBT_NS Tag::Float>(child.payload_));
+        return;
+      }
+      case NBT_NS Type::Double: {
+        std::get<NBT_NS Tag::Array<NBT_NS Tag::Double>>(std::get<NBT_NS Tag::List>(payload_)).push_back(std::get<NBT_NS Tag::Double>(child.payload_));
+        return;
+      }
+      case NBT_NS Type::String: {
+        std::get<NBT_NS Tag::Array<NBT_NS Tag::String>>(std::get<NBT_NS Tag::List>(payload_)).push_back(std::get<NBT_NS Tag::String>(child.payload_));
+        return;
+      }
+      default: {
+        std::get<NBT_NS Tag::Array<NBT_NS Tag>>(std::get<NBT_NS Tag::List>(payload_)).push_back(std::move(child));
+        return;
+      }
+      }
+    default:
+      return;
+    }
   }
 
-  /**
-   * @brief Check whether the tag is not TAG_End.
-   * @return true if the tag has a concrete NBT type, false if it represents TAG_End.
-   */
-  operator bool() const {
-    return type != Type::End;
+  void addImpl(std::string_view name, Tag child) {
+    if (type_ == NBT_NS Type::End) {
+      type_ = NBT_NS Type::Compound;
+      payload_ = NBT_NS Tag::Compound{};
+    }
+    if (type_ != NBT_NS Type::Compound || child.type_ == NBT_NS Type::End) {
+      return;
+    }
+    std::get<Compound>(payload_).insert_or_assign(std::string(name), std::move(child));
   }
+
+  NBT_NS Type type_{NBT_NS Type::End};
+  NBT_NS Type elementType_{NBT_NS Type::End};
+  NBT_NS Tag::Payload payload_;
 };
 
 /**
- * @brief Structural index entry: byte ranges and sibling/child links into the input.
+ * @brief Typed-value literals and the @c name|value naming helper.
+ *
+ * Numeric suffixes: @c _tb, @c _ts, @c _ti, @c _tl, @c _tf, @c _td.
+ * String suffix: @c _ts (const char*, size_t).
+ * @c "name"|value produces a named pair for Compound initializer lists.
  */
+inline namespace tag_literals {
+
+[[nodiscard]] constexpr NBT_NS Tag::Byte operator""_tb(unsigned long long value) noexcept {
+  return NBT_NS Tag::Byte(value);
+}
+
+[[nodiscard]] constexpr NBT_NS Tag::Short operator""_ts(unsigned long long value) noexcept {
+  return NBT_NS Tag::Short(value);
+}
+
+[[nodiscard]] constexpr NBT_NS Tag::Int operator""_ti(unsigned long long value) noexcept {
+  return NBT_NS Tag::Int(value);
+}
+
+[[nodiscard]] constexpr NBT_NS Tag::Long operator""_tl(unsigned long long value) noexcept {
+  return NBT_NS Tag::Long(value);
+}
+
+[[nodiscard]] constexpr NBT_NS Tag::Float operator""_tf(long double value) noexcept {
+  return NBT_NS Tag::Float(value);
+}
+
+[[nodiscard]] constexpr NBT_NS Tag::Double operator""_td(long double value) noexcept {
+  return NBT_NS Tag::Double(value);
+}
+
+[[nodiscard]] NBT_NS Tag::String operator""_ts(const char *str, size_t len) {
+  return NBT_NS Tag::String(str, len);
+}
+
+[[nodiscard]] inline std::pair<const std::string, NBT_NS Tag> operator|(std::string_view name, const NBT_NS Tag &value) {
+  return std::pair<const std::string, NBT_NS Tag>{name, value};
+}
+
+[[nodiscard]] inline std::pair<const std::string, NBT_NS Tag> operator|(std::string_view name, NBT_NS Tag &&value) {
+  return std::pair<const std::string, NBT_NS Tag>{name, std::move(value)};
+}
+
+template <typename Value>
+  requires(!std::is_same_v<std::remove_cvref_t<Value>, NBT_NS Tag> && std::is_constructible_v<NBT_NS Tag, Value &&>)
+[[nodiscard]] inline std::pair<const std::string, NBT_NS Tag> operator|(std::string_view name, Value &&value) {
+  return name | NBT_NS Tag(std::forward<Value>(value));
+}
+
+} // namespace tag_literals
+
+/** @brief Structural index entry: byte offsets and child/sibling links. */
 struct Node {
   static constexpr std::uint32_t END = (std::numeric_limits<std::uint32_t>::max)();
 
-  /// Bytes
-  std::uint32_t begin{nbt::Node::END};   ///< Offset where the tag begins (type byte for named tags; payload for list elements).
-  std::uint32_t end{nbt::Node::END};     ///< Offset immediately after the tag.
-  std::uint32_t payload{nbt::Node::END}; ///< Offset of the decodable payload bytes.
+  std::uint32_t begin{NBT_NS Node::END};   ///< Offset of the type byte (named) or payload (list element).
+  std::uint32_t end{NBT_NS Node::END};     ///< One past the last byte of this tag.
+  std::uint32_t payload{NBT_NS Node::END}; ///< Offset of the decodable payload.
 
-  /// Indices
-  std::uint32_t firstChild{nbt::utils::NO_NODE};  ///< Index of the first child node, or @ref noNode.
-  std::uint32_t nextSibling{nbt::utils::NO_NODE}; ///< Index of the next sibling node, or @ref noNode.
+  std::uint32_t firstChild{NBT_NS utils::NO_NODE};  ///< Index of the first child node.
+  std::uint32_t nextSibling{NBT_NS utils::NO_NODE}; ///< Index of the next sibling node.
 
-  /// Counts
-  std::uint32_t childCount{}; ///< Number of direct children.
+  std::uint32_t childCount{0}; ///< Number of direct children.
 
-  /// Types
-  Type type{Type::End};        ///< NBT type of the node.
-  Type elementType{Type::End}; ///< List element type, when @ref type is Type::List.
+  NBT_NS Type type{NBT_NS Type::End};        ///< NBT type of the node.
+  NBT_NS Type elementType{NBT_NS Type::End}; ///< List element type when type is Type::List.
 
-  Node(std::uint32_t begin) : begin(begin) {
+  explicit Node(std::uint32_t begin) : begin(begin) {
   }
 };
 
 class NbtUtilities;
 
 /**
- * @brief NBT document: validates input lazily, exposes non-owning views and encodes tags.
+ * @brief NBT document: validates input, exposes non-owning views, materializes
+ *        owning tags and encodes them back to binary.
  *
- * Parsing indexes the complete structure without decoding values into an owning tree.
- * Truncated input is not an error: the document reports Status::NeedMoreData and can be
- * completed later with @ref append. Malformed input throws nbt::Exception.
- *
- * @par Encoding policy
- * With NBT_STRICT_MODE defined, values are encoded exactly as declared by their
- * Tag::type and the caller is responsible for supplying well-formed input;
- * violations produce exceptions or undefined behavior. Without it, invalid values
- * are ignored: mismatched payloads, wrong list element types and TAG_End children
- * are skipped, and the encoded size accounts only for the values actually written.
- *
- * @tparam BufferT Owning contiguous byte storage used for accumulated input and encoded
- *                 output. Defaults to nbt::Buffer.
+ * Parsing indexes the complete structure without decoding values. Truncated
+ * input produces Status::NeedMoreData and can be completed with append().
+ * Malformed input throws Exception.
  */
-template <typename BufferT = nbt::Buffer>
 class NbtParser final {
-public:
-  /**
-   * @brief Validate borrowed bytes, tolerating truncation.
-   * @param data Input bytes. The document borrows the buffer and must not outlive it.
-   * @return A document in Status::Complete, Status::NeedMoreData or Status::Empty.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  [[nodiscard]] static NbtParser parseAtMost(std::span<const std::byte> data) {
-    Options options;
-    return parseAtMost(data, options);
-  }
 
-  /**
-   * @brief Validate borrowed bytes with limits, tolerating truncation.
-   * @param data Input bytes. The document borrows the buffer and must not outlive it.
-   * @param options Resource limits applied during validation.
-   * @return A document in Status::Complete, Status::NeedMoreData or Status::Empty.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  [[nodiscard]] static NbtParser parseAtMost(std::span<const std::byte> data, const Options &options) {
-    return parseImpl(data, options, true);
-  }
-
-  /**
-   * @brief Validate borrowed bytes; truncated input throws.
-   * @param data Input bytes. The document borrows the buffer and must not outlive it.
-   * @return A document in Status::Complete.
-   * @throws nbt::NeedMoreDataException on empty or truncated input.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  [[nodiscard]] static NbtParser parse(std::span<const std::byte> data) {
-    Options options;
-    return parse(data, options);
-  }
-
-  /**
-   * @brief Validate borrowed bytes with limits; truncated input throws.
-   * @param data Input bytes. The document borrows the buffer and must not outlive it.
-   * @param options Resource limits applied during validation.
-   * @return A document in Status::Complete.
-   * @throws nbt::NeedMoreDataException on empty or truncated input.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  [[nodiscard]] static NbtParser parse(std::span<const std::byte> data, const Options &options) {
-    return parseImpl(data, options, false);
-  }
-
-  /**
-   * @brief Copy a contiguous container into the internal buffer and validate it,
-   *        tolerating truncation.
-   * @tparam Container A contiguous byte container.
-   * @param data Input bytes to copy and own.
-   * @return A document in Status::Complete, Status::NeedMoreData or Status::Empty.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  template <typename Container>
-  [[nodiscard]] static NbtParser parseAtMost(const Container &data) {
-    Options options;
-    return parseAtMost(data, options);
-  }
-
-  /**
-   * @brief Copy a contiguous container into the internal buffer and validate it with
-   *        limits, tolerating truncation.
-   * @tparam Container A contiguous byte container.
-   * @param data Input bytes to copy and own.
-   * @param options Resource limits applied during validation.
-   * @return A document in Status::Complete, Status::NeedMoreData or Status::Empty.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  template <typename Container>
-  [[nodiscard]] static NbtParser parseAtMost(const Container &data, const Options &options) {
-    return parseImpl(data, options, true);
-  }
-
-  /**
-   * @brief Copy a contiguous container into the internal buffer and validate it;
-   *        truncated input throws.
-   * @tparam Container A contiguous byte container.
-   * @param data Input bytes to copy and own.
-   * @return A document in Status::Complete.
-   * @throws nbt::NeedMoreDataException on empty or truncated input.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  template <typename Container>
-  [[nodiscard]] static NbtParser parse(const Container &data) {
-    Options options;
-    return parse(data, options);
-  }
-
-  /**
-   * @brief Copy a contiguous container into the internal buffer and validate it with
-   *        limits; truncated input throws.
-   * @tparam Container A contiguous byte container.
-   * @param data Input bytes to copy and own.
-   * @param options Resource limits applied during validation.
-   * @return A document in Status::Complete.
-   * @throws nbt::NeedMoreDataException on empty or truncated input.
-   * @throws nbt::Exception on malformed input or violated limits.
-   */
-  template <typename Container>
-  [[nodiscard]] static NbtParser parse(const Container &data, const Options &options) {
-    return parseImpl(data, options, false);
-  }
-
-  /**
-   * @brief Lazy big-endian view over a TAG_Int_Array or TAG_Long_Array payload.
-   *
-   * Elements are decoded on access directly from the document bytes; the view does not
-   * own or extend the lifetime of the underlying data.
-   *
-   * @tparam T Decoded element type (Tag::Int or Tag::Long).
-   */
-  template <typename T>
-  class ArrayView {
-  public:
-    /**
-     * @brief Forward iterator that decodes elements on dereference.
-     */
-    class Iterator {
-    public:
-      Iterator() = default;
-
-      Iterator(const ArrayView *view, std::size_t index) : view_(view), index_(index) {
-      }
-
-      [[nodiscard]] T operator*() const {
-        return (*view_)[index_];
-      }
-
-      Iterator &operator++() noexcept {
-        ++index_;
-        return *this;
-      }
-
-      Iterator operator++(int) noexcept {
-        Iterator copy{view_, index_};
-        ++index_;
-        return copy;
-      }
-
-      [[nodiscard]] bool operator==(const Iterator &other) const noexcept {
-        return view_ == other.view_ && index_ == other.index_;
-      }
-
-      [[nodiscard]] bool operator!=(const Iterator &other) const noexcept {
-        return !(*this == other);
-      }
-
-    private:
-      const ArrayView *view_{};
-      std::size_t index_{0};
-    };
-
-    ArrayView() = default;
-
-    ArrayView(const NbtParser *owner, std::size_t payload) : owner_(owner), payload_(payload) {
-    }
-
-    /**
-     * @brief Number of elements in the array.
-     */
-    [[nodiscard]] std::size_t size() const noexcept {
-      return owner_ ? static_cast<std::size_t>(owner_->readNumber<std::uint32_t>(payload_)) : 0;
-    }
-
-    /**
-     * @brief Whether the array has no elements.
-     */
-    [[nodiscard]] bool empty() const noexcept {
-      return size() == 0;
-    }
-
-    /**
-     * @brief Decode the element at @p index.
-     * @throws nbt::NeedMoreDataException if @p index is out of bounds.
-     */
-    [[nodiscard]] T operator[](std::size_t index) const {
-      if (index >= size()) {
-        throw nbt::NeedMoreDataException("overflow", index);
-      }
-      return owner_->readNumber<T>(payload_ + 4 + (sizeof(T) * index));
-    }
-
-    /**
-     * @brief Decode the first element.
-     */
-    [[nodiscard]] T front() const {
-      return (*this)[0];
-    }
-
-    /**
-     * @brief Decode the last element.
-     */
-    [[nodiscard]] T back() const {
-      return (*this)[size() - 1];
-    }
-
-    [[nodiscard]] Iterator begin() const noexcept {
-      return {this, 0};
-    }
-
-    [[nodiscard]] Iterator end() const noexcept {
-      return {this, size()};
-    }
-
-  private:
-    const NbtParser *owner_{};
-    std::size_t payload_{0};
+private:
+  struct Lifetime {
+    const NbtParser *document;
   };
 
-  using IntArrayView = ArrayView<Tag::Int>;   ///< Lazy view over TAG_Int_Array elements.
-  using LongArrayView = ArrayView<Tag::Long>; ///< Lazy view over TAG_Long_Array elements.
+public:
+  /** @brief Parse borrowed bytes; truncated input yields Status::NeedMoreData. */
+  [[nodiscard]] static NBT_NS NbtParser parseAtMost(std::span<const std::byte> data, const NBT_NS Options &options = NBT_NS Options{}) {
+    return parseImpl(data, options, true);
+  }
 
-  /**
-   * @brief Non-owning lazy view of a single node inside a document.
-   *
-   * Views reference the document that produced them and must not outlive it. Container
-   * traversal follows sibling links, so indexed access via @ref child / @ref operator[]
-   * is O(index); prefer range iteration in hot loops.
-   */
-  class View {
+  /** @brief Parse borrowed bytes; truncated input throws NeedMoreDataException. */
+  [[nodiscard]] static NBT_NS NbtParser parse(std::span<const std::byte> data, const NBT_NS Options &options = NBT_NS Options{}) {
+    return parseImpl(data, options, false);
+  }
+
+  /** @brief Parse a contiguous container (copies bytes); truncated input yields Status::NeedMoreData. */
+  template <typename Container>
+  [[nodiscard]] static NBT_NS NbtParser parseAtMost(const Container &data, const NBT_NS Options &options = NBT_NS Options{}) {
+    return parseImpl(data, options, true);
+  }
+
+  /** @brief Parse a contiguous container (copies bytes); truncated input throws NeedMoreDataException. */
+  template <typename Container>
+  [[nodiscard]] static NBT_NS NbtParser parse(const Container &data, const NBT_NS Options &options = NBT_NS Options{}) {
+    return parseImpl(data, options, false);
+  }
+
+  /** @brief Non-owning lazy view over a validated node in the document. */
+  class TagView {
+  protected:
+    enum class AccessType : std::uint8_t {
+      Node,
+      SubItem,
+    };
+
   public:
-    /**
-     * @brief Forward iterator over the children of a container view.
-     */
     class Iterator {
     public:
+      using iterator_category = std::forward_iterator_tag;
+      using value_type = TagView;
+      using difference_type = std::ptrdiff_t;
+      using reference = TagView;
+      using pointer = void;
+
       Iterator() = default;
 
-      Iterator(const NbtParser *owner, std::uint32_t node) : owner_(owner), node_(node) {
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      Iterator(std::weak_ptr<NBT_NS NbtParser::Lifetime> owner, std::uint32_t index, std::uint32_t position) : owner_(std::move(owner)), index_(index), position_(position), accessType_(NBT_NS NbtParser::TagView::AccessType::SubItem) {
       }
 
-      [[nodiscard]] View operator*() const {
-        return {owner_, node_};
+      Iterator(std::weak_ptr<NBT_NS NbtParser::Lifetime> owner, std::uint32_t index) : owner_(std::move(owner)), index_(index) {
+      }
+
+      [[nodiscard]] reference operator*() const {
+        auto owner = owner_.lock();
+
+        if (accessType_ == NBT_NS NbtParser::TagView::AccessType::Node) {
+          if (owner == nullptr || index_ == NBT_NS utils::NO_NODE || index_ >= owner->document->nodes_.size()) {
+            throw NBT_NS Exception("Document not found", index_);
+          }
+          return NBT_NS NbtParser::TagView{owner->document, index_};
+        }
+
+        if (owner == nullptr || index_ == NBT_NS utils::NO_NODE || position_ == NBT_NS utils::NO_NODE || position_ >= owner->document->nodes_[index_].childCount) {
+          throw NBT_NS Exception("Document not found", index_);
+        }
+        return NBT_NS NbtParser::TagView{owner->document, index_, position_};
       }
 
       Iterator &operator++() {
-        node_ = owner_->nodes_[node_].nextSibling;
+        auto owner = owner_.lock();
+
+        if (accessType_ == NBT_NS NbtParser::TagView::AccessType::Node) {
+          if (owner != nullptr && index_ != NBT_NS utils::NO_NODE && index_ < owner->document->nodes_.size()) {
+            index_ = owner->document->nodes_[index_].nextSibling;
+          } else {
+            index_ = NBT_NS utils::NO_NODE;
+          }
+          return *this;
+        }
+
+        if (owner != nullptr && index_ != NBT_NS utils::NO_NODE && position_ != NBT_NS utils::NO_NODE && index_ < owner->document->nodes_.size() && position_ < owner->document->nodes_[index_].childCount) {
+          position_++;
+          if (position_ < owner->document->nodes_[index_].childCount) {
+            return *this;
+          }
+        }
+
+        index_ = NBT_NS utils::NO_NODE;
+        position_ = NBT_NS utils::NO_NODE;
         return *this;
       }
 
       Iterator operator++(int) {
-        Iterator copy{*this};
-        ++*this;
-        return copy;
+        Iterator tmp = *this;
+        ++(*this);
+        return tmp;
       }
 
       [[nodiscard]] bool operator==(const Iterator &other) const noexcept {
-        return owner_ == other.owner_ && node_ == other.node_;
-      }
-
-      [[nodiscard]] bool operator!=(const Iterator &other) const noexcept {
-        return !(*this == other);
+        if (index_ == other.index_ && index_ == NBT_NS utils::NO_NODE) {
+          return true;
+        }
+        const bool sameOwner = !owner_.owner_before(other.owner_) && !other.owner_.owner_before(owner_);
+        return sameOwner && accessType_ == other.accessType_ && index_ == other.index_ && position_ == other.position_;
       }
 
     private:
-      const NbtParser *owner_{};
-      std::uint32_t node_{0};
+      std::weak_ptr<NBT_NS NbtParser::Lifetime> owner_;
+      std::uint32_t index_{NBT_NS utils::NO_NODE};
+      std::uint32_t position_{NBT_NS utils::NO_NODE};
+      NBT_NS NbtParser::TagView::AccessType accessType_{AccessType::Node};
     };
 
-    View() = default;
+    TagView() = default;
 
-    /**
-     * @brief Whether the view references a valid node.
-     */
-    [[nodiscard]] explicit operator bool() const noexcept {
-      return owner_ != nullptr;
+    /** @brief Element type for arrays and lists, Type::End otherwise. */
+    [[nodiscard]] NBT_NS Type elementType() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr || accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem) {
+        return NBT_NS Type::End;
+      }
+
+      const auto &entry = node(owner);
+      switch (entry.type) {
+      case NBT_NS Type::ByteArray:
+        return NBT_NS Type::Byte;
+      case NBT_NS Type::IntArray:
+        return NBT_NS Type::Int;
+      case NBT_NS Type::LongArray:
+        return NBT_NS Type::Long;
+      case NBT_NS Type::List:
+        return entry.elementType;
+      default:
+        return NBT_NS Type::End;
+      }
     }
 
-    /**
-     * @brief NBT type of the referenced tag.
-     */
-    [[nodiscard]] Type type() const {
-      return node().type;
-    }
-
-    /**
-     * @brief Element type when the tag is a TAG_List, Type::End otherwise.
-     */
-    [[nodiscard]] Type elementType() const {
-      return owner_ != nullptr ? node().elementType : Type::End;
-    }
-
-    /**
-     * @brief Byte offset where the tag begins in the document buffer.
-     */
-    [[nodiscard]] std::size_t payloadBegin() const {
-      return node().begin;
-    }
-
-    /**
-     * @brief Byte offset immediately after the tag in the document buffer.
-     */
-    [[nodiscard]] std::size_t payloadEnd() const {
-      return node().end;
-    }
-
-    /**
-     * @brief Tag name, empty for unnamed tags such as list elements.
-     */
-    [[nodiscard]] std::string_view name() const {
-      const auto &entry = node();
-      return owner_->nodeName(entry);
-    }
-
-    /**
-     * @brief Number of direct children (list/compound elements, array length).
-     */
+    /** @brief Number of direct children (containers only). */
     [[nodiscard]] std::size_t size() const {
-      return owner_ != nullptr ? node().childCount : 0;
+      auto owner = owner_.lock();
+      return owner == nullptr || accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem ? 0 : node(owner).childCount;
     }
 
-    /**
-     * @brief Whether the tag has no children.
-     */
+    /** @brief Whether the container has no children. */
     [[nodiscard]] bool empty() const {
       return size() == 0;
     }
 
-    /**
-     * @brief Child at @p index. Equivalent to @ref child.
-     */
-    [[nodiscard]] View operator[](std::size_t index) const {
-      return child(index);
+    /** @brief Tag name; empty for unnamed tags such as list elements. */
+    [[nodiscard]] std::string_view name() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr || accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem) {
+        return "";
+      }
+      return owner->document->readName(node(owner));
     }
 
-    /**
-     * @brief Child at @p position, or an empty view when out of bounds. O(position).
-     */
-    [[nodiscard]] View child(std::size_t position) const {
-      const auto &entry = node();
+    /** @brief NBT type of the referenced tag. */
+    [[nodiscard]] NBT_NS Type type() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        return NBT_NS Type::End;
+      }
+      const auto &entry = node(owner);
+      return accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem ? entry.elementType : entry.type;
+    }
+
+    /** @brief Access the child at @p position. Returns an empty view if out of range. */
+    [[nodiscard]] NBT_NS NbtParser::TagView child(std::size_t position) const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        return {};
+      }
+
+      const auto &entry = node(owner);
       if (position >= entry.childCount) {
         return {};
       }
+
+      switch (entry.type) {
+      case NBT_NS Type::ByteArray:
+      case NBT_NS Type::IntArray:
+      case NBT_NS Type::LongArray:
+      case NBT_NS Type::List: {
+        switch (entry.elementType) {
+        case NBT_NS Type::Byte:
+        case NBT_NS Type::Short:
+        case NBT_NS Type::Int:
+        case NBT_NS Type::Long:
+        case NBT_NS Type::Float:
+        case NBT_NS Type::Double:
+        case NBT_NS Type::String: {
+          return {owner->document, index_, static_cast<std::uint32_t>(position)};
+        }
+        default:
+          break;
+        }
+      }
+      default:
+        break;
+      }
+
       std::uint32_t current = entry.firstChild;
       for (std::size_t index = 0; index < position; ++index) {
-        current = owner_->nodes_[current].nextSibling;
+        current = owner->document->nodes_[current].nextSibling;
       }
-      return {owner_, current};
+      return {owner->document, current};
     }
 
-    /**
-     * @brief First child named @p requestedName, or an empty view when absent. O(size()).
-     */
-    [[nodiscard]] View find(std::string_view requestedName) const {
-      for (const auto candidate : *this) {
-        if (candidate.name() == requestedName) {
-          return candidate;
+    /** @brief Find a child by name inside a Compound. Returns an empty view if not found. */
+    [[nodiscard]] TagView find(std::string_view requestedName) const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        return {};
+      }
+
+      const auto &entry = node(owner);
+      std::uint32_t current = entry.firstChild;
+      for (std::size_t index = 0; index < entry.childCount; ++index) {
+        if (owner->document->readName(owner->document->nodes_[current]) == requestedName) {
+          return TagView{owner->document, current};
         }
+        current = owner->document->nodes_[current].nextSibling;
       }
       return {};
     }
 
-    [[nodiscard]] Iterator begin() const {
-      if (owner_ == nullptr || node().childCount == 0) {
-        return {owner_, nbt::utils::NO_NODE};
+    [[nodiscard]] TagView operator[](std::size_t position) const {
+      return child(position);
+    }
+
+    [[nodiscard]] TagView operator[](std::string_view requestedName) const {
+      auto result = find(requestedName);
+      if (!result) {
+        throw Exception("child not found", index_);
       }
-      return {owner_, node().firstChild};
+      return result;
     }
 
-    [[nodiscard]] Iterator end() const {
-      return {owner_, nbt::utils::NO_NODE};
-    }
-
-    /**
-     * @brief Decode the payload as the given NBT type.
-     *
-     * Scalars decode big-endian numbers. Type::String returns a std::string_view and
-     * Type::ByteArray a std::span<const std::byte> into the document bytes. Type::IntArray
-     * and Type::LongArray return lazy @ref ArrayView views. Type::List and Type::Compound
-     * return a container-capable View.
-     *
-     * @tparam t The expected NBT type.
-     * @throws std::bad_variant_access if the tag type does not match @p t.
-     */
-    template <Type t>
+    /** @brief Decode the payload as the given NBT type. */
+    template <NBT_NS Type t>
     [[nodiscard]] auto as() const {
-      require(t);
-      if constexpr (t == Type::Byte) {
-        return owner_->readNumber<std::int8_t>(node().payload);
-      } else if constexpr (t == Type::Short) {
-        return owner_->readNumber<std::int16_t>(node().payload);
-      } else if constexpr (t == Type::Int) {
-        return owner_->readNumber<std::int32_t>(node().payload);
-      } else if constexpr (t == Type::Long) {
-        return owner_->readNumber<std::int64_t>(node().payload);
-      } else if constexpr (t == Type::Float) {
-        return owner_->readNumber<float>(node().payload);
-      } else if constexpr (t == Type::Double) {
-        return owner_->readNumber<double>(node().payload);
-      } else if constexpr (t == Type::String) {
-        const auto offset = node().payload;
-        const auto size = owner_->readNumber<std::uint16_t>(offset);
-        return owner_->text(offset + 2, size);
-      } else if constexpr (t == Type::ByteArray) {
-        const auto count = owner_->readNumber<std::uint32_t>(node().payload);
-        return std::span<const std::byte>{owner_->data_.data() + node().payload + 4, static_cast<std::size_t>(count)};
-      } else if constexpr (t == Type::IntArray) {
-        return IntArrayView(owner_, node().payload);
-      } else if constexpr (t == Type::LongArray) {
-        return LongArrayView(owner_, node().payload);
-      } else if constexpr (t == Type::List || t == Type::Compound) {
-        return View(owner_, index_);
+      if constexpr (t == NBT_NS Type::End) {
+        static_assert(t != NBT_NS Type::End, "as<T>() cannot decode TAG_End");
+        throw std::bad_variant_access();
+      } else if constexpr (NBT_NS utils::TypeTraits<t>::isScalar) {
+        return decodeNumber<typename NBT_NS utils::TypeTraits<t>::value_t>(t);
+      } else if constexpr (t == NBT_NS Type::String) {
+        return decodeString(t);
+      } else if constexpr (NBT_NS utils::TypeTraits<t>::isArray) {
+        return decodeArray<typename NBT_NS utils::TypeTraits<t>::element_t>(t);
+      } else if constexpr (t == NBT_NS Type::List) {
+        return decodeList();
+      } else if constexpr (t == NBT_NS Type::Compound) {
+        return decodeCompound();
       } else {
-        static_assert(false, "Invalid NBT type");
-      }
-    }
-
-    /**
-     * @brief Decode this subtree into an owning nbt::Tag.
-     */
-    [[nodiscard]] Tag materialize() const {
-      return owner_->materialize(index_);
-    }
-
-  private:
-    friend class NbtParser;
-
-    View(const NbtParser *owner, std::uint32_t index) : owner_(owner), index_(index) {
-    }
-
-    [[nodiscard]] const Node &node() const {
-      if (owner_ == nullptr || index_ >= owner_->nodes_.size()) {
-        throw std::logic_error("invalid NBT view");
-      }
-      return owner_->nodes_[index_];
-    }
-
-    void require(Type expected) const {
-      if (type() != expected) {
         throw std::bad_variant_access();
       }
     }
 
-    const NbtParser *owner_{};
-    const std::uint32_t index_{};
+    /** @brief Materialize this view into an owning Tag tree. */
+    [[nodiscard]] operator Tag() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      if (accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem) {
+        const auto &entry = node(owner);
+        switch (entry.elementType) {
+        case NBT_NS Type::Byte:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Byte>(entry, position_));
+        case NBT_NS Type::Short:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Short>(entry, position_));
+        case NBT_NS Type::Int:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Int>(entry, position_));
+        case NBT_NS Type::Long:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Long>(entry, position_));
+        case NBT_NS Type::Float:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Float>(entry, position_));
+        case NBT_NS Type::Double:
+          return NBT_NS Tag(owner->document->readNumber<NBT_NS Tag::Double>(entry, position_));
+        case NBT_NS Type::String:
+          return NBT_NS Tag(owner->document->readString(entry, position_));
+        default:
+          throw std::bad_variant_access();
+        }
+      }
+      return owner->document->readTag(index_);
+    }
+
+    /** @brief Whether the view references a valid node. */
+    [[nodiscard]] explicit operator bool() const noexcept {
+      return !owner_.expired();
+    }
+
+    /** @brief Iterator to the first child. */
+    [[nodiscard]] Iterator begin() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        return {};
+      }
+
+      if (accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem) {
+        return {};
+      }
+
+      const auto &entry = node(owner);
+      switch (entry.elementType) {
+      case NBT_NS Type::Byte:
+      case NBT_NS Type::Short:
+      case NBT_NS Type::Int:
+      case NBT_NS Type::Long:
+      case NBT_NS Type::Float:
+      case NBT_NS Type::Double:
+      case NBT_NS Type::String: {
+        return {owner_, index_, 0};
+      }
+      default:
+        return {owner_, entry.firstChild};
+      }
+    }
+
+    /** @brief Sentinel past the last child. */
+    [[nodiscard]] Iterator end() const {
+      return {};
+    }
+
+  private:
+    friend class NBT_NS NbtParser;
+
+    using Lifetime = std::shared_ptr<NBT_NS NbtParser::Lifetime>;
+
+    TagView(const NBT_NS NbtParser *owner, std::uint32_t index) : owner_(owner->lifetime_), index_(index) {
+    }
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    TagView(const NBT_NS NbtParser *owner, std::uint32_t index, std::uint32_t position) : owner_(owner->lifetime_), index_(index), position_(position), accessType_(NBT_NS NbtParser::TagView::AccessType::SubItem) {
+    }
+
+    [[nodiscard]] const NBT_NS Node &node(const Lifetime &owner) const {
+      if (owner == nullptr || index_ >= owner->document->nodes_.size()) {
+        throw std::logic_error("invalid NBT view");
+      }
+      return owner->document->nodes_[index_];
+    }
+
+    [[nodiscard]] const NBT_NS Node &node(const Lifetime &owner, std::uint32_t index) const {
+      if (owner == nullptr || index >= owner->document->nodes_.size()) {
+        throw std::logic_error("invalid NBT view");
+      }
+      return owner->document->nodes_[index];
+    }
+
+    template <typename T>
+    T decodeNumber(Type expected) const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      const auto &entry = node(owner);
+      const auto type = accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem ? entry.elementType : entry.type;
+      if (type != expected) {
+        throw std::bad_variant_access();
+      }
+      if (accessType_ == NBT_NS NbtParser::TagView::AccessType::Node) {
+        return owner->document->readNumber<T>(entry);
+      }
+      return owner->document->readNumber<T>(entry, position_);
+    }
+
+    [[nodiscard]] std::string_view decodeString(Type expected) const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      const auto &entry = node(owner);
+      const auto type = accessType_ == NBT_NS NbtParser::TagView::AccessType::SubItem ? entry.elementType : entry.type;
+      if (type != expected) {
+        throw std::bad_variant_access();
+      }
+      if (accessType_ == NBT_NS NbtParser::TagView::AccessType::Node) {
+        return owner->document->readString(entry);
+      }
+      return owner->document->readString(entry, position_);
+    }
+
+    template <typename T>
+    [[nodiscard]] NBT_NS Tag::Array<T> decodeArray(Type expected) const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      const auto &entry = node(owner);
+      if (entry.type != expected) {
+        throw std::bad_variant_access();
+      }
+      return owner->document->readArray<T>(entry);
+    }
+
+    [[nodiscard]] std::vector<TagView> decodeList() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      const auto &entry = node(owner);
+      if (entry.type != NBT_NS Type::List) {
+        throw std::bad_variant_access();
+      }
+      auto childCount = entry.childCount;
+      std::vector<TagView> values;
+      values.reserve(static_cast<std::size_t>(childCount));
+      std::uint32_t childIndex = entry.firstChild;
+      for (std::uint32_t index = 0; index < childCount; index++) {
+        switch (entry.elementType) {
+        case NBT_NS Type::Byte:
+        case NBT_NS Type::Short:
+        case NBT_NS Type::Int:
+        case NBT_NS Type::Long:
+        case NBT_NS Type::Float:
+        case NBT_NS Type::Double:
+        case NBT_NS Type::String:
+          values.emplace_back(TagView(owner->document, index_, index));
+          break;
+        default:
+          values.emplace_back(TagView(owner->document, childIndex));
+          childIndex = node(owner, childIndex).nextSibling;
+          break;
+        }
+      }
+      return values;
+    }
+
+    [[nodiscard]] std::unordered_map<std::string, TagView> decodeCompound() const {
+      auto owner = owner_.lock();
+      if (owner == nullptr) {
+        throw Exception("Document not found", index_);
+      }
+      const auto &entry = node(owner);
+      if (entry.type != NBT_NS Type::Compound) {
+        throw std::bad_variant_access();
+      }
+      auto childCount = entry.childCount;
+      std::unordered_map<std::string, TagView> values;
+      values.reserve(static_cast<std::size_t>(childCount));
+      std::uint32_t childIndex = entry.firstChild;
+      for (std::uint32_t index = 0; index < childCount; index++) {
+        const auto &subEntry = node(owner, childIndex);
+        values.insert_or_assign(NBT_NS Tag::String(owner->document->readName(subEntry)), NBT_NS NbtParser::TagView(owner->document, childIndex));
+        childIndex = subEntry.nextSibling;
+      }
+      return values;
+    }
+
+    std::weak_ptr<NBT_NS NbtParser::Lifetime> owner_;
+    std::uint32_t index_{NBT_NS utils::NO_NODE};
+    std::uint32_t position_{NBT_NS utils::NO_NODE};
+    NBT_NS NbtParser::TagView::AccessType accessType_{AccessType::Node};
   };
 
-  /**
-   * @brief Empty document in Status::Empty.
-   */
   NbtParser() = default;
 
   NbtParser(const NbtParser &) = delete;
@@ -896,45 +1062,13 @@ public:
     return *this;
   }
 
-  /**
-   * @brief Document owning an already materialized root tag, ready to @ref encode.
-   */
-  explicit NbtParser(nbt::Tag rootValue) {
+  /** @brief Construct a document from an already-materialized root tag, ready for encode(). */
+  explicit NbtParser(NBT_NS Tag rootValue) {
     rootValue_ = std::move(rootValue);
-    status_ = nbt::Status::Complete;
+    status_ = NBT_NS Status::Complete;
   }
 
-  /**
-   * @brief Override the maximum nesting depth limit.
-   */
-  void setMaxDepth(std::size_t value) {
-    maxDepth_ = value;
-  }
-
-  /**
-   * @brief Override the maximum elements per container limit.
-   */
-  void setMaxContainerElements(std::size_t value) {
-    maxContainerElements_ = value;
-  }
-
-  /**
-   * @brief Override the maximum total nodes limit.
-   */
-  void setMaxTotalNodes(std::size_t value) {
-    maxTotalNodes_ = value;
-  }
-
-  /**
-   * @brief Override the maximum input size limit in bytes.
-   */
-  void setMaxInputBytes(std::size_t value) {
-    maxInputBytes_ = value;
-  }
-
-  /**
-   * @brief Exchange the full state with another document.
-   */
+  /** @brief Exchange the full state with another document. */
   void swap(NbtParser &nbt) noexcept {
     using std::swap;
 
@@ -951,201 +1085,206 @@ public:
     swap(maxContainerElements_, nbt.maxContainerElements_);
     swap(maxTotalNodes_, nbt.maxTotalNodes_);
     swap(maxInputBytes_, nbt.maxInputBytes_);
+    swap(named_, nbt.named_);
+
+    swap(lifetime_, nbt.lifetime_);
+    if (lifetime_ != nullptr) {
+      lifetime_->document = this;
+    }
+    if (nbt.lifetime_ != nullptr) {
+      nbt.lifetime_->document = &nbt;
+    }
   }
 
   /**
-   * @brief Append a contiguous container fragment and revalidate the accumulated input.
-   * @tparam Container A contiguous byte container.
-   * @param chunk Bytes copied into the internal buffer.
-   * @throws nbt::Exception if the accumulated input is malformed or exceeds a limit.
+   * @brief Append a byte fragment and revalidate accumulated input.
+   *
+   * Empty chunks are a no-op. Truncated input stays at Status::NeedMoreData.
+   * @throws Exception if the accumulated input is malformed or exceeds a limit.
    */
   template <typename Container>
-  void append(const Container &chunk, bool named = true) {
-    append(asBytes(chunk), named);
+  void append(const Container &chunk) {
+    append(asBytes(chunk));
   }
 
-  /**
-   * @brief Append a byte fragment and revalidate the accumulated input.
-   *
-   * Empty chunks are a no-op. If the accumulated input is still truncated the document
-   * reports Status::NeedMoreData instead of throwing.
-   *
-   * @param chunk Bytes copied into the internal buffer.
-   * @throws nbt::Exception if the accumulated input is malformed or exceeds a limit.
-   */
-  void append(std::span<const std::byte> chunk, bool named = true) {
+  /// @copydoc append
+  void append(std::span<const std::byte> chunk) {
     if (chunk.empty()) {
       return;
     }
-
     appendImpl(chunk);
-    validate(true, named);
+    validate(true);
   }
 
-  /**
-   * @brief Reset the document to Status::Empty, discarding bytes, index and root tag.
-   */
+  /** @brief Reset to Status::Empty, discarding bytes, index and root tag. */
   void clear() noexcept {
     data_.reset();
     rootValue_.reset();
-    status_ = Status::Empty;
+    status_ = NBT_NS Status::Empty;
     position_ = 0;
     next_node_ = 0;
     nodes_.clear();
+    named_ = false;
   }
 
-  /**
-   * @brief Current document state.
-   */
-  [[nodiscard]] Status status() const noexcept {
+  /** @brief Current document state. */
+  [[nodiscard]] NBT_NS Status status() const noexcept {
     return status_;
   }
 
-  /**
-   * @brief Whether the input validated completely.
-   */
+  /** @brief Whether the input validated completely. */
   [[nodiscard]] bool valid() const noexcept {
-    return status_ == Status::Complete;
+    return status_ == NBT_NS Status::Complete;
   }
 
-  /**
-   * @brief Whether the document owns its bytes (container parse or @ref append) rather
-   *        than borrowing them (span parse).
-   */
+  /** @brief Whether the document owns its bytes rather than borrowing a span. */
   [[nodiscard]] bool ownsBytes() const noexcept {
     return data_.capacity() > 0;
   }
 
-  /**
-   * @brief Current internal or borrowed input bytes, including any trailing data beyond
-   *        the validated root tag.
-   */
+  /** @brief Current internal or borrowed input bytes. */
   [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
     return {data_.data(), data_.size()};
   }
 
   /**
-   * @brief Lazy view of the root tag.
-   * @throws std::logic_error if the document is empty or incomplete.
+   * @brief Obtain a lazy root view over the validated bytes.
+   * @throws std::logic_error if the document is incomplete.
    */
-  [[nodiscard]] View root() const {
-    if (status_ == Status::Empty || nodes_.empty()) {
+  [[nodiscard]] TagView root() const {
+    if (status_ != NBT_NS Status::Complete || nodes_.empty()) {
       throw std::logic_error("NBT is incomplete");
     }
     return {this, 0};
   }
 
   /**
-   * @brief Decode the whole document into an owning nbt::Tag tree.
-   * @throws std::logic_error if the document is empty or incomplete.
+   * @brief Materialize the root into an owning Tag tree.
+   * @throws std::logic_error if the document is incomplete.
    */
-  [[nodiscard]] Tag materialize() const {
+  [[nodiscard]] NBT_NS Tag readTag() const {
     if (rootValue_) {
       return *rootValue_;
     }
-    return root().materialize();
+    if (status_ != NBT_NS Status::Complete || nodes_.empty()) {
+      throw std::logic_error("NBT is incomplete");
+    }
+    return readTag(0);
   }
 
   /**
-   * @brief Encode the document to a new buffer.
-   *
-   * Only the valid NBT portion is written; trailing bytes accepted during parsing are
-   * not reproduced. With NBT_STRICT_MODE the caller must supply well-formed input;
-   * without it, invalid values are ignored during encoding.
-   *
-   * @param named Whether to include the root tag name (file style) or omit it (network style).
-   * @return The encoded bytes.
-   * @throws std::bad_alloc if the output buffer cannot grow.
+   * @brief Encode the document into a new Buffer.
+   * @param name Optional root name; std::nullopt omits the name header.
    */
-  [[nodiscard]] BufferT encode(bool named = true) const {
-    BufferT output;
-    encode(output, named);
+  [[nodiscard]] NBT_NS Buffer encode(std::optional<std::string_view> name = std::nullopt) const {
+    NBT_NS Buffer output;
+    encode(output, name);
     return output;
   }
 
-  /**
-   * @brief Append the encoded document to an existing buffer. See the @ref encode
-   *        overload for the encoding policy.
-   * @param output Destination buffer.
-   * @param named Whether to include the root tag name (file style) or omit it (network style).
-   * @throws std::bad_alloc if the output buffer cannot grow.
-   */
-  void encode(BufferT &output, bool named = true) const {
-    if (status_ != Status::Complete) {
-      throw nbt::Exception("incomplete data", 0);
+  /** @brief Encode the document, appending to an existing Buffer. */
+  void encode(NBT_NS Buffer &output, std::optional<std::string_view> name = std::nullopt) const {
+    if (status_ != NBT_NS Status::Complete) {
+      throw NBT_NS Exception("incomplete data", 0);
     }
 
     if (rootValue_) {
-      if (rootValue_->type == Type::End) {
+      if (rootValue_->type() == NBT_NS Type::End) {
         throw std::invalid_argument("TAG_End");
       }
-#ifndef NBT_STRICT_MODE
-      if (!payloadMatches(*rootValue_)) {
-        throw std::invalid_argument("NBT payload does not match the declared tag type");
-      }
-#endif
 
-      const std::size_t valueEncodedSize = encodedSize(rootValue_.value(), named);
+      const std::size_t valueEncodedSize = tagSize({}, rootValue_.value(), name);
       auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
       if (buffer == nullptr) [[unlikely]] {
         throw std::bad_alloc();
       }
 
       BufferWriter appender{static_cast<std::byte *>(buffer), available};
-      appender.writeBE(static_cast<std::uint8_t>(rootValue_->type));
-      if (named) {
-        appendString(appender, rootValue_->name);
+      appender.writeBE(static_cast<std::uint8_t>(rootValue_->type()));
+      if (name) {
+        appendString(appender, name.value());
       }
       appendPayload(appender, rootValue_.value());
 
       output.postallocate(appender.written());
     } else if (!nodes_.empty()) {
-      const Node &rootNode = nodes_[0];
-      if (rootNode.type == Type::End) {
+      const NBT_NS Node &rootNode = nodes_[0];
+      if (rootNode.type == NBT_NS Type::End) {
         throw std::invalid_argument("TAG_End");
       }
 
-      std::string_view name = nodeName(rootNode);
-      const std::size_t headerSize = named ? 2 + name.size() : 0;
-      const std::size_t valueEncodedSize = 1 + headerSize + (rootNode.end - rootNode.payload);
-      auto [buffer, available] = output.preallocate(valueEncodedSize, BufferUtils::growthSize(valueEncodedSize));
+      if (name && name->size() > NBT_NS utils::MAX_STR_SIZE) {
+        throw std::length_error("NBT string exceeds 65535 bytes");
+      }
+      const std::size_t headerSize = name ? 2 + name->size() : 0;
+      const std::size_t payloadSize = rootNode.end - rootNode.payload;
+      const std::size_t valueEncodedSize = 1 + headerSize + payloadSize;
+      auto [buffer, available] = output.preallocate(valueEncodedSize, NBT_NS BufferUtils::growthSize(valueEncodedSize));
       if (buffer == nullptr) [[unlikely]] {
         throw std::bad_alloc();
       }
 
       BufferWriter appender{static_cast<std::byte *>(buffer), available};
       appender.put(static_cast<std::byte>(rootNode.type));
-      if (named) {
-        appender.writeBE(static_cast<std::uint16_t>(name.size()));
-        appender.write(name.data(), name.size());
+      if (name) {
+        appendString(appender, *name);
       }
-      appender.write(data_.data() + rootNode.payload, rootNode.end - rootNode.payload);
+      appender.write(data_.data() + rootNode.payload, payloadSize);
 
       output.postallocate(appender.written());
     }
   }
 
   /**
-   * @brief Size in bytes of @p value once encoded.
-   * @param value Tag to measure.
-   * @param named Whether the tag header (type id plus name) is included.
+   * @brief Estimated encoded size in bytes for @p value. Never throws.
+   *
+   * When @p parent is Compound or End a type-id header (and optional name) is
+   * included; list children are headerless payloads. Missing payloads are
+   * measured as zero-values, empty strings or empty containers.
+   *
+   * @param parent The container that will hold @p value (End for root).
+   * @param value  Tag to measure.
+   * @param name   Root name; std::nullopt omits the name header.
    */
-  [[nodiscard]] static std::size_t encodedSize(const Tag &value, const bool named = true) {
-    std::size_t size = 1;
-    if (named) {
-      size += stringSize(value.name);
+  [[nodiscard]] static std::size_t tagSize(const NBT_NS Tag &parent, const NBT_NS Tag &value, std::optional<std::string_view> name = std::nullopt) noexcept {
+    std::size_t header = 0;
+    if (parent.type() == NBT_NS Type::Compound || parent.type() == NBT_NS Type::End) {
+      header += 1;
+      header += name ? 2 + name->size() : 0;
     }
-
-    return size + payloadSize(value);
+    switch (value.type()) {
+    case NBT_NS Type::Byte:
+      return header + 1;
+    case NBT_NS Type::Short:
+      return header + 2;
+    case NBT_NS Type::Int:
+    case NBT_NS Type::Float:
+      return header + 4;
+    case NBT_NS Type::Long:
+    case NBT_NS Type::Double:
+      return header + 8;
+    case NBT_NS Type::String:
+      return header + stringSize(value);
+    case NBT_NS Type::ByteArray:
+      return header + arraySize<NBT_NS Tag::Byte>(value);
+    case NBT_NS Type::IntArray:
+      return header + arraySize<NBT_NS Tag::Int>(value);
+    case NBT_NS Type::LongArray:
+      return header + arraySize<NBT_NS Tag::Long>(value);
+    case NBT_NS Type::List:
+      return header + listSize(value);
+    case NBT_NS Type::Compound:
+      return header + compoundSize(value);
+    case NBT_NS Type::End:
+    default:
+      return header;
+    }
   }
 
 private:
-  /**
-   * @brief Bounds-checked byte writer over a preallocated buffer region.
-   */
   class BufferWriter final {
   public:
-    BufferWriter(std::byte *data, std::size_t capacity) : begin_(data), current_(data), end_(capacity == 0 ? data : data + capacity) {
+    BufferWriter(std::byte *data, std::size_t capacity) : begin_(data), current_(data), end_(data + capacity) {
       if (data == nullptr && capacity != 0) [[unlikely]] {
         throw std::invalid_argument("null buffer writer storage");
       }
@@ -1177,21 +1316,8 @@ private:
       if constexpr (sizeof(T) == 1) {
         put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
       } else {
-        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
+        auto bits = bitCast<T, typename NBT_NS utils::BitsType<sizeof(T)>::bits>(value);
 #ifndef NBT_BIG_ENDIAN
-        bits = std::byteswap(bits);
-#endif
-        write(&bits, sizeof(T));
-      }
-    }
-
-    template <typename T>
-    void writeLE(T value) {
-      if constexpr (sizeof(T) == 1) {
-        put(static_cast<std::byte>(static_cast<std::uint8_t>(value)));
-      } else {
-        nbt::utils::nbt_number<T> bits = bitCast<T, nbt::utils::nbt_number<T>>(value);
-#ifdef NBT_BIG_ENDIAN
         bits = std::byteswap(bits);
 #endif
         write(&bits, sizeof(T));
@@ -1208,29 +1334,27 @@ private:
     std::byte *end_{};
   };
 
-  friend class nbt::NbtUtilities;
+  friend class NbtUtilities;
 
-  NbtParser(BufferT &buffer) : data_{std::move(buffer)} {
+  explicit NbtParser(std::span<const std::byte> buffer) : data_{buffer} {
   }
 
-  NbtParser(std::span<const std::byte> buffer) : data_{buffer} {
-  }
-
-  std::uint32_t parseNode(std::size_t depth, std::uint32_t previousSibling, bool named = true, Type declared = Type::End) {
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+  std::uint32_t parseNode(std::size_t depth, std::uint32_t previousSibling, bool named = true, NBT_NS Type declared = NBT_NS Type::End) {
     const auto begin = position_;
     const auto nodeIndex = beginNode(begin);
-    if (nodes_[nodeIndex].end != nbt::Node::END) {
-      nbt::Node &node = nodes_[nodeIndex];
+    if (nodes_[nodeIndex].end != NBT_NS Node::END) {
+      NBT_NS Node &node = nodes_[nodeIndex];
       position_ = node.end;
       next_node_ = node.nextSibling;
       return nodeIndex;
     }
 
-    if (previousSibling != nbt::utils::NO_NODE) {
+    if (previousSibling != NBT_NS utils::NO_NODE) {
       nodes_[previousSibling].nextSibling = nodeIndex;
     }
 
-    const auto type = declared == Type::End ? readType() : declared;
+    const auto type = declared == NBT_NS Type::End ? readType() : declared;
 
     if (named) {
       const auto nameSize = readNumber<std::uint16_t>();
@@ -1241,23 +1365,30 @@ private:
     return nodeIndex;
   }
 
-  [[nodiscard]] std::string_view nodeName(const Node &value) const {
-    if (value.end == nbt::Node::END || value.payload < value.begin || value.payload - value.begin <= 3) {
+  [[nodiscard]] std::string_view readName(const NBT_NS Node &value) const {
+    if (value.end == NBT_NS Node::END || value.payload <= value.begin + 3) {
       return {};
     }
-    return text(value.begin + 3, value.payload - value.begin - 3);
+    auto position = static_cast<std::size_t>(value.begin);
+    position = skip(position, 1);
+    const auto size = static_cast<std::size_t>(readNumber<std::uint16_t>(position));
+    position = skip(position, 2);
+    return text(position, size);
   }
 
   void appendImpl(std::span<const std::byte> chunk) {
-    if (status_ != Status::NeedMoreData) {
-      rootValue_.reset();
-      status_ = Status::NeedMoreData;
+    if (rootValue_) {
+      throw std::logic_error("cannot append to a document built from a materialized tag");
+    }
+
+    if (status_ != NBT_NS Status::NeedMoreData) {
+      status_ = NBT_NS Status::NeedMoreData;
     }
 
     data_.append(chunk.data(), chunk.data() + chunk.size_bytes());
   }
 
-  void validate(bool atMost, bool named = true) {
+  void validate(bool atMost) {
     position_ = 0;
     next_node_ = 0;
     try {
@@ -1266,63 +1397,67 @@ private:
       }
 
       const auto type = readType(position_);
-      if (type == Type::End) {
+      if (type == NBT_NS Type::End) {
         throw Exception("unexpected TAG_End", position_);
       }
 
-      parseNode(0, nbt::utils::NO_NODE, named);
+      parseNode(0, NBT_NS utils::NO_NODE, named_);
 
-      status_ = Status::Complete;
-    } catch (const NeedMoreDataException &nmEx) {
+      status_ = NBT_NS Status::Complete;
+    } catch (const NBT_NS NeedMoreDataException &) {
       next_node_ = 0;
       position_ = 0;
-      status_ = Status::NeedMoreData;
+      status_ = NBT_NS Status::NeedMoreData;
       if (atMost) {
         return;
       }
-      throw nmEx;
+      throw;
     }
   }
 
-  void parsePayload(std::uint32_t nodeIndex, Type type, std::size_t depth) {
+  void parsePayload(std::uint32_t nodeIndex, NBT_NS Type type, std::size_t depth) {
     if (depth > maxDepth_) {
       throw Exception("NBT depth limit exceeded", position_);
     }
-    const auto payload = checkedOffset(position_);
+    auto payload = checkedOffset(position_);
     switch (type) {
-    case Type::Byte:
+    case NBT_NS Type::Byte:
       skip(1);
       break;
-    case Type::Short:
+    case NBT_NS Type::Short:
       skip(2);
       break;
-    case Type::Int:
-    case Type::Float:
+    case NBT_NS Type::Int:
+    case NBT_NS Type::Float:
       skip(4);
       break;
-    case Type::Long:
-    case Type::Double:
+    case NBT_NS Type::Long:
+    case NBT_NS Type::Double:
       skip(8);
       break;
-    case Type::String:
+    case NBT_NS Type::String:
       skip(readNumber<std::uint16_t>());
       break;
-    case Type::ByteArray:
-      skipArray(1);
+    case NBT_NS Type::ByteArray:
+      parseArray<NBT_NS Tag::Byte>(nodeIndex);
+      payload += 4;
       break;
-    case Type::IntArray:
-      skipArray(4);
+    case NBT_NS Type::IntArray:
+      parseArray<NBT_NS Tag::Int>(nodeIndex);
+      payload += 4;
       break;
-    case Type::LongArray:
-      skipArray(8);
+    case NBT_NS Type::LongArray:
+      parseArray<NBT_NS Tag::Long>(nodeIndex);
+      payload += 4;
       break;
-    case Type::List:
+    case NBT_NS Type::List:
       parseList(nodeIndex, depth);
+      payload += 5;
       break;
-    case Type::Compound:
+    case NBT_NS Type::Compound:
       parseCompound(nodeIndex, depth);
       break;
-    case Type::End:
+    case NBT_NS Type::End:
       throw Exception("unexpected TAG_End", position_);
     }
     auto &node = nodes_[nodeIndex];
@@ -1331,39 +1466,78 @@ private:
     node.end = checkedOffset(position_);
   }
 
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void parseList(std::uint32_t nodeIndex, std::size_t depth) {
     const auto elementType = readType();
     const auto childCount = readCount();
     const auto firstChild = next_node_;
 
-    if (elementType == Type::End && childCount != 0) {
+    if (elementType == NBT_NS Type::End && childCount != 0) {
       throw Exception("non-empty TAG_List uses TAG_End", position_);
     }
 
     auto &node = nodes_[nodeIndex];
     node.elementType = elementType;
     node.childCount = checkedOffset(childCount);
-    node.firstChild = checkedOffset(firstChild);
 
-    std::uint32_t previousSibling = nbt::utils::NO_NODE;
-    for (std::size_t index = 0; index < childCount; ++index) {
-      previousSibling = parseNode(depth + 1, previousSibling, false, elementType);
+    switch (elementType) {
+    case NBT_NS Type::End:
+    case NBT_NS Type::Byte: {
+      skip(childCount);
+      return;
+    }
+    case NBT_NS Type::Short: {
+      skip(childCount * 2);
+      return;
+    }
+    case NBT_NS Type::Int:
+    case NBT_NS Type::Float: {
+      skip(childCount * 4);
+      return;
+    }
+    case NBT_NS Type::Long:
+    case NBT_NS Type::Double: {
+      skip(childCount * 8);
+      return;
+    }
+    case NBT_NS Type::String: {
+      for (std::size_t index = 0; index < childCount; index++) {
+        const auto size = static_cast<std::size_t>(readNumber<std::uint16_t>());
+        skip(size);
+      }
+      return;
+    }
+    default: {
+      node.firstChild = childCount == 0 ? NBT_NS utils::NO_NODE : checkedOffset(firstChild);
+
+      std::uint32_t previousSibling = NBT_NS utils::NO_NODE;
+      for (std::size_t index = 0; index < childCount; ++index) {
+        previousSibling = parseNode(depth + 1, previousSibling, false, elementType);
+      }
+      return;
+    }
     }
   }
 
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void parseCompound(std::uint32_t nodeIndex, std::size_t depth) {
-    nodes_[nodeIndex].firstChild = checkedOffset(next_node_);
+    auto firstChild = NBT_NS utils::NO_NODE;
+    auto previousSibling = NBT_NS utils::NO_NODE;
     std::size_t count{};
-    std::uint32_t previousSibling = nbt::utils::NO_NODE;
     while (peek() != std::byte{}) {
       if (count >= maxContainerElements_) {
         throw Exception("NBT container element limit exceeded", position_);
       }
       previousSibling = parseNode(depth + 1, previousSibling);
+      if (firstChild == NBT_NS utils::NO_NODE) {
+        firstChild = previousSibling;
+      }
       ++count;
     }
     skip(1);
-    nodes_[nodeIndex].childCount = checkedOffset(count);
+    auto &node = nodes_[nodeIndex];
+    node.firstChild = firstChild;
+    node.childCount = checkedOffset(count);
   }
 
   [[nodiscard]] std::uint32_t beginNode(std::size_t begin) {
@@ -1383,33 +1557,33 @@ private:
     return index;
   }
 
-  void skipArray(std::size_t width) {
+  template <typename T>
+  void parseArray(std::uint32_t nodeIndex) {
     const auto count = readCount();
-    if (count > nbt::utils::MAX_COUNT) {
-      throw Exception("NBT array size overflow", position_);
-    }
-    skip(count * width);
+    nodes_[nodeIndex].childCount = checkedOffset(count);
+    nodes_[nodeIndex].elementType = NBT_NS utils::TypeOf<T>::value;
+    skip(count * sizeof(T));
   }
 
   [[nodiscard]] std::size_t readCount() {
     const auto count = readNumber<std::uint32_t>();
     if (static_cast<std::size_t>(count) > maxContainerElements_) {
-      throw Exception("NBT container element limit exceeded", position_ - 4);
+      throw NBT_NS Exception("NBT container element limit exceeded", position_ - 4);
     }
     return static_cast<std::size_t>(count);
   }
 
-  [[nodiscard]] Type readType(std::size_t offset) {
+  [[nodiscard]] NBT_NS Type readType(std::size_t offset) const {
     const auto raw = readNumber<std::uint8_t>(offset);
-    if (raw > static_cast<std::uint8_t>(Type::LongArray)) {
+    if (raw > static_cast<std::uint8_t>(NBT_NS Type::LongArray)) {
       throw Exception("unknown NBT type", offset);
     }
     return static_cast<Type>(raw);
   }
 
-  [[nodiscard]] Type readType() {
+  [[nodiscard]] NBT_NS Type readType() {
     const auto raw = readNumber<std::uint8_t>();
-    if (raw > static_cast<std::uint8_t>(Type::LongArray)) {
+    if (raw > static_cast<std::uint8_t>(NBT_NS Type::LongArray)) {
       throw Exception("unknown NBT type", position_ - 1);
     }
     return static_cast<Type>(raw);
@@ -1421,8 +1595,24 @@ private:
     if constexpr (sizeof(T) == 1) {
       return static_cast<T>(std::to_integer<std::uint8_t>(data_.data()[offset]));
     } else {
-      nbt::utils::nbt_number<T> bits;
+      typename NBT_NS utils::BitsType<sizeof(T)>::bits bits;
       std::memcpy(&bits, data_.data() + offset, sizeof(T));
+#ifndef NBT_BIG_ENDIAN
+      bits = std::byteswap(bits);
+#endif
+      return bitCast<T>(bits);
+    }
+  }
+
+  template <class T>
+  [[nodiscard]] T readNumber(const NBT_NS Node &node, const std::size_t relativePosition = 0) const {
+    const auto position = static_cast<std::size_t>(node.payload + (relativePosition * sizeof(T)));
+    require(position, sizeof(T));
+    if constexpr (sizeof(T) == 1) {
+      return static_cast<T>(std::to_integer<std::uint8_t>(data_.data()[position]));
+    } else {
+      typename NBT_NS utils::BitsType<sizeof(T)>::bits bits;
+      std::memcpy(&bits, data_.data() + position, sizeof(T));
 #ifndef NBT_BIG_ENDIAN
       bits = std::byteswap(bits);
 #endif
@@ -1438,9 +1628,188 @@ private:
     return value;
   }
 
+  [[nodiscard]] std::string_view readString(std::size_t offset) const {
+    const auto size = static_cast<std::size_t>(readNumber<std::uint16_t>(offset));
+    require(offset + 2, size);
+    return text(offset + 2, size);
+  }
+
+  [[nodiscard]] std::string_view readString(const NBT_NS Node &node, const std::size_t relativePosition = 0) const {
+    std::size_t position = node.payload;
+
+    if (node.type == NBT_NS Type::List && relativePosition > 0) {
+      for (std::size_t index = 0; index < relativePosition; index++) {
+        const auto size = static_cast<std::size_t>(readNumber<std::uint16_t>(position));
+        position = skip(position, 2);
+        position = skip(position, size);
+      }
+    }
+
+    const auto size = static_cast<std::size_t>(readNumber<std::uint16_t>(position));
+    position = skip(position, 2);
+    require(position, size);
+    return text(position, size);
+  }
+
+  [[nodiscard]] std::string_view readString() {
+    const auto str = readString(position_);
+    position_ += str.size() + 2;
+    return str;
+  }
+
+  template <typename T>
+    requires(NBT_NS Tag::isNBTNumber<T>)
+  [[nodiscard]] NBT_NS Tag::Array<T> readArray(const NBT_NS Node &node) const {
+    std::size_t position = node.payload;
+    const auto count = static_cast<std::size_t>(node.childCount);
+    require(position, count * sizeof(T));
+    if constexpr (sizeof(T) == 1) {
+      NBT_NS Tag::ByteArray data(count);
+      std::memcpy(data.data(), data_.data() + position, count);
+      return data;
+    } else {
+      NBT_NS Tag::Array<T> data(count);
+      for (std::size_t index = 0; index < count; index++) {
+        data[index] = readNumber<T>(position);
+        position = skip(position, sizeof(T));
+      }
+      return data;
+    }
+  }
+
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag::String> readStringList(const NBT_NS Node &node) const {
+    std::size_t position = node.payload;
+    const auto count = static_cast<std::size_t>(node.childCount);
+    NBT_NS Tag::Array<NBT_NS Tag::String> data(count);
+    for (std::size_t index = 0; index < count; index++) {
+      const auto str = readString(position);
+      position = skip(position, 2 + str.size());
+      data[index] = str;
+    }
+    return data;
+  }
+
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubList(const NBT_NS Node &node) const {
+    const auto count = static_cast<std::size_t>(node.childCount);
+    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    std::uint32_t childIndex = node.firstChild;
+    for (std::size_t index = 0; index < count; index++) {
+      const auto &childNode = nodes_[childIndex];
+      data[index] = readList(childNode);
+      childIndex = childNode.nextSibling;
+    }
+    return data;
+  }
+
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readCompoundList(const NBT_NS Node &node) const {
+    const auto count = static_cast<std::size_t>(node.childCount);
+    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    std::uint32_t childIndex = node.firstChild;
+    for (std::size_t index = 0; index < count; index++) {
+      const auto &childNode = nodes_[childIndex];
+      data[index] = readCompound(childNode);
+      childIndex = childNode.nextSibling;
+    }
+    return data;
+  }
+
+  template <typename T>
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubArray(const NBT_NS Node &node) const {
+    const auto count = static_cast<std::size_t>(node.childCount);
+    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    std::uint32_t childIndex = node.firstChild;
+    for (std::size_t index = 0; index < count; index++) {
+      const auto &childNode = nodes_[childIndex];
+      data[index] = readArray<T>(childNode);
+      childIndex = childNode.nextSibling;
+    }
+    return data;
+  }
+
+  [[nodiscard]] NBT_NS Tag readList(const NBT_NS Node &node) const {
+    const auto type = node.elementType;
+
+    NBT_NS Tag::List list;
+    switch (type) {
+    case NBT_NS Type::Byte: {
+      list = readArray<NBT_NS Tag::Byte>(node);
+      break;
+    }
+    case NBT_NS Type::Short: {
+      list = readArray<NBT_NS Tag::Short>(node);
+      break;
+    }
+    case NBT_NS Type::Int: {
+      list = readArray<NBT_NS Tag::Int>(node);
+      break;
+    }
+    case NBT_NS Type::Long: {
+      list = readArray<NBT_NS Tag::Long>(node);
+      break;
+    }
+    case NBT_NS Type::Float: {
+      list = readArray<NBT_NS Tag::Float>(node);
+      break;
+    }
+    case NBT_NS Type::Double: {
+      list = readArray<NBT_NS Tag::Double>(node);
+      break;
+    }
+    case NBT_NS Type::String:
+      list = readStringList(node);
+      break;
+    case NBT_NS Type::List:
+      list = readSubList(node);
+      break;
+    case NBT_NS Type::Compound: {
+      list = readCompoundList(node);
+      break;
+    }
+    case NBT_NS Type::ByteArray: {
+      list = readSubArray<NBT_NS Tag::Byte>(node);
+      break;
+    }
+    case NBT_NS Type::IntArray: {
+      list = readSubArray<NBT_NS Tag::Int>(node);
+      break;
+    }
+    case NBT_NS Type::LongArray: {
+      list = readSubArray<NBT_NS Tag::Long>(node);
+      break;
+    }
+    case NBT_NS Type::End:
+    default:
+      break;
+    }
+
+    NBT_NS Tag value;
+    value.type(NBT_NS Type::List);
+    value.elementType(node.elementType);
+    value.payload(std::move(list));
+    return value;
+  }
+
+  [[nodiscard]] NBT_NS Tag readCompound(const NBT_NS Node &node) const {
+    NBT_NS Tag::Compound values;
+    values.reserve(node.childCount);
+    std::uint32_t childIndex = node.firstChild;
+    for (std::size_t index = 0; index < node.childCount; ++index) {
+      const auto &childNode = nodes_[childIndex];
+      values.insert_or_assign(NBT_NS Tag::String(readName(childNode)), readTag(childIndex));
+      childIndex = childNode.nextSibling;
+    }
+
+    return values;
+  }
+
   [[nodiscard]] std::byte peek() const {
     require(1);
     return data_.data()[position_];
+  }
+
+  [[nodiscard]] std::size_t skip(std::size_t offset, std::size_t count) const {
+    require(offset, count);
+    return offset + count;
   }
 
   void skip(std::size_t count) {
@@ -1464,237 +1833,206 @@ private:
     return {reinterpret_cast<const char *>(data_.data() + offset), size};
   }
 
-  [[nodiscard]] Tag materialize(std::uint32_t nodeIndex) const {
+  [[nodiscard]] NBT_NS Tag readTag(std::uint32_t nodeIndex) const {
     const auto &node = nodes_[nodeIndex];
-    const auto name = nodeName(node);
-    Tag value;
-    value.type = node.type;
-    value.name.assign(name);
     switch (node.type) {
-    case Type::Byte:
-      value.payload = readNumber<Tag::Byte>(node.payload);
-      break;
-    case Type::Short:
-      value.payload = readNumber<Tag::Short>(node.payload);
-      break;
-    case Type::Int:
-      value.payload = readNumber<Tag::Int>(node.payload);
-      break;
-    case Type::Long:
-      value.payload = readNumber<Tag::Long>(node.payload);
-      break;
-    case Type::Float:
-      value.payload = readNumber<Tag::Float>(node.payload);
-      break;
-    case Type::Double:
-      value.payload = readNumber<Tag::Double>(node.payload);
-      break;
-    case Type::String:
-      value.payload = std::string(View(this, nodeIndex).template as<Type::String>());
-      break;
-    case Type::ByteArray: {
-      const auto bytes = View(this, nodeIndex).template as<Type::ByteArray>();
-      nbt::Tag::ByteArray result(bytes.size());
-      std::memcpy(result.data(), bytes.data(), bytes.size());
-      value.payload = std::move(result);
-      break;
+    case NBT_NS Type::Byte:
+      return readNumber<NBT_NS Tag::Byte>(node);
+    case NBT_NS Type::Short:
+      return readNumber<NBT_NS Tag::Short>(node);
+    case NBT_NS Type::Int:
+      return readNumber<NBT_NS Tag::Int>(node);
+    case NBT_NS Type::Long:
+      return readNumber<NBT_NS Tag::Long>(node);
+    case NBT_NS Type::Float:
+      return readNumber<NBT_NS Tag::Float>(node);
+    case NBT_NS Type::Double:
+      return readNumber<NBT_NS Tag::Double>(node);
+    case NBT_NS Type::String:
+      return readString(node);
+    case NBT_NS Type::ByteArray:
+      return readArray<NBT_NS Tag::Byte>(node);
+    case NBT_NS Type::IntArray:
+      return readArray<NBT_NS Tag::Int>(node);
+    case NBT_NS Type::LongArray:
+      return readArray<NBT_NS Tag::Long>(node);
+    case NBT_NS Type::List:
+      return readList(node);
+    case NBT_NS Type::Compound:
+      return readCompound(node);
+    case NBT_NS Type::End:
+      return Tag{};
+    default:
+      throw NBT_NS Exception("Invalid type", 0);
     }
-    case Type::IntArray: {
-      IntArrayView view(this, node.payload);
-      nbt::Tag::IntArray result(view.size());
-      for (std::size_t index = 0; index < result.size(); ++index) {
-        result[index] = view[index];
-      }
-      value.payload = std::move(result);
-      break;
-    }
-    case Type::LongArray: {
-      LongArrayView view(this, node.payload);
-      std::vector<std::int64_t> result(view.size());
-      for (std::size_t index = 0; index < result.size(); ++index) {
-        result[index] = view[index];
-      }
-      value.payload = std::move(result);
-      break;
-    }
-    case Type::List:
-    case Type::Compound: {
-      std::vector<Tag> values;
-      values.reserve(node.childCount);
-      for (const auto child : View(this, nodeIndex)) {
-        values.push_back(child.materialize());
-      }
-      value.elementType = node.elementType;
-      value.payload = std::move(values);
-      break;
-    }
-    case Type::End:
-      break;
-    }
-    return value;
   }
 
-  [[nodiscard]] static NbtParser parseImpl(std::span<const std::byte> data, const Options &options, bool atMost) {
-    nbt::NbtParser<BufferT> document(data);
-    document.setMaxDepth(options.maxDepth);
-    document.setMaxContainerElements(options.maxContainerElements);
-    document.setMaxTotalNodes(options.maxTotalNodes);
-    document.setMaxInputBytes(options.maxInputBytes);
+  [[nodiscard]] static NBT_NS NbtParser parseImpl(std::span<const std::byte> data, const NBT_NS Options &options, bool atMost) {
+    NBT_NS NbtParser document(data);
+    document.maxDepth_ = options.maxDepth;
+    document.maxContainerElements_ = options.maxContainerElements;
+    document.maxTotalNodes_ = options.maxTotalNodes;
+    document.maxInputBytes_ = options.maxInputBytes;
+    document.named_ = options.named;
 
     if (data.empty()) [[unlikely]] {
       if (atMost) {
-        document.status_ = Status::NeedMoreData;
+        document.status_ = NBT_NS Status::NeedMoreData;
         return document;
       }
-      throw nbt::NeedMoreDataException("empty data", 0);
+      throw NBT_NS NeedMoreDataException("empty data", 0);
     }
 
-    document.validate(atMost, options.named);
+    document.validate(atMost);
     return document;
   }
 
   template <typename Container>
-  [[nodiscard]] static NbtParser parseImpl(const Container &data, const Options &options, bool atMost) {
+  [[nodiscard]] static NBT_NS NbtParser parseImpl(const Container &data, const NBT_NS Options &options, bool atMost) {
     NbtParser document;
-    document.setMaxDepth(options.maxDepth);
-    document.setMaxContainerElements(options.maxContainerElements);
-    document.setMaxTotalNodes(options.maxTotalNodes);
-    document.setMaxInputBytes(options.maxInputBytes);
+    document.maxDepth_ = options.maxDepth;
+    document.maxContainerElements_ = options.maxContainerElements;
+    document.maxTotalNodes_ = options.maxTotalNodes;
+    document.maxInputBytes_ = options.maxInputBytes;
+    document.named_ = options.named;
 
     if (data.empty()) {
       if (atMost) {
-        document.status_ = Status::NeedMoreData;
+        document.status_ = NBT_NS Status::NeedMoreData;
         return document;
       }
-      throw nbt::NeedMoreDataException("data empty", 0);
+      throw NBT_NS NeedMoreDataException("data empty", 0);
     }
 
     const std::span<const std::byte> view = asBytes(data);
     document.appendImpl(view);
-    document.validate(atMost, options.named);
+    document.validate(atMost);
     return document;
   }
 
-  template <std::size_t MAX = nbt::utils::MAX_COUNT>
+  template <std::size_t MAX = NBT_NS utils::MAX_COUNT>
   [[nodiscard]] static std::uint32_t checkedOffset(std::size_t value) {
     if (value > MAX) {
-      throw Exception("NBT offset exceeds "s + std::to_string(MAX), value);
+      throw Exception(std::string("NBT offset exceeds ") + std::to_string(MAX), value);
     }
     return static_cast<std::uint32_t>(value);
   }
 
-  static std::size_t stringSize(std::string_view value) noexcept {
-    if (value.size() > utils::MAX_STR_SIZE) {
-      return utils::MAX_STR_SIZE;
-    }
-    return value.size() + 2;
+  static std::size_t stringSize(const NBT_NS Tag &tag) {
+    const auto *string = std::get_if<NBT_NS Tag::String>(&tag.payload());
+    return 2 + (string == nullptr ? 0 : string->size());
   }
 
-  static std::size_t listSize(const Tag &parent, const Tag::Container &values) noexcept {
-    if (values.size() > utils::MAX_COUNT - 5) {
-      return utils::MAX_COUNT;
-    }
-#ifdef NBT_STRICT_MODE
-    switch (parent.elementType) {
-    case Type::End:
-      return 5;
-    case Type::Byte:
-      return 5 + values.size();
-    case Type::Short:
-      return 5 + (values.size() * 2);
-    case Type::Int:
-    case Type::Float:
-      return 5 + (values.size() * 4);
-    case Type::Long:
-    case Type::Double:
-      return 5 + (values.size() * 8);
-    case Type::String:
-    case Type::List:
-    case Type::Compound:
-    case Type::ByteArray:
-    case Type::IntArray:
-    case Type::LongArray: {
-      std::size_t size = 5;
-      for (const auto &element : values) {
-        const auto elementSize = payloadSize(element);
-        if (elementSize > utils::MAX_BYTES - size) {
-          return utils::MAX_BYTES;
-        }
-        size += elementSize;
-      }
+  template <typename T>
+  static std::size_t arraySize(const NBT_NS Tag &tag) noexcept {
+    const auto *values = std::get_if<NBT_NS Tag::Array<T>>(&tag.payload());
+    return 4 + (values == nullptr ? 0 : values->size() * sizeof(T));
+  }
+
+  static std::size_t listSize(const NBT_NS Tag &tag) noexcept {
+    std::size_t size = 5;
+    const auto *list = std::get_if<NBT_NS Tag::List>(&tag.payload());
+    if (list == nullptr) {
       return size;
     }
-    }
-    return 0;
-#else
-    std::size_t size = 5;
-    for (const auto &element : values) {
-      if (element.type != parent.elementType || !payloadMatches(element)) {
-        continue;
+    switch (tag.elementType()) {
+    case NBT_NS Type::Byte:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Byte>>(list)) {
+        size += values->size();
       }
-      const auto elementSize = payloadSize(element);
-      if (elementSize > utils::MAX_BYTES - size) {
-        return utils::MAX_BYTES;
+      break;
+    case NBT_NS Type::Short:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Short>>(list)) {
+        size += values->size() * 2;
       }
-      size += elementSize;
+      break;
+    case NBT_NS Type::Int:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Int>>(list)) {
+        size += values->size() * 4;
+      }
+      break;
+    case NBT_NS Type::Long:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Long>>(list)) {
+        size += values->size() * 8;
+      }
+      break;
+    case NBT_NS Type::Float:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Float>>(list)) {
+        size += values->size() * 4;
+      }
+      break;
+    case NBT_NS Type::Double:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::Double>>(list)) {
+        size += values->size() * 8;
+      }
+      break;
+    case NBT_NS Type::String:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag::String>>(list)) {
+        for (const auto &element : *values) {
+          size += 2 + element.size();
+        }
+      }
+      break;
+    case NBT_NS Type::ByteArray:
+    case NBT_NS Type::IntArray:
+    case NBT_NS Type::LongArray:
+    case NBT_NS Type::List:
+    case NBT_NS Type::Compound:
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<NBT_NS Tag>>(list)) {
+        for (const auto &element : *values) {
+          if (element.type() == tag.elementType()) {
+            size += tagSize(tag, element);
+          }
+        }
+      }
+      break;
+    case NBT_NS Type::End:
+    default:
+      break;
     }
     return size;
-#endif
   }
 
-#ifdef NBT_STRICT_MODE
-  template <typename T>
-    requires std::disjunction_v<std::is_same<T, Tag::Byte>, std::is_same<T, Tag::Int>, std::is_same<T, Tag::Long>>
-  static std::size_t arraySize(const std::vector<T> &values) noexcept {
-    if (values.size() > utils::MAX_COUNT) {
-      return utils::MAX_COUNT;
-    }
-    return 4 + (values.size() * sizeof(T));
-  }
-
-#else
-  template <typename T, Type ElementT>
-  static std::size_t arraySize(const Tag::Payload &payload) noexcept {
-    std::size_t count = 0;
-    if (const auto *values = std::get_if<std::vector<T>>(&payload)) {
-      count = values->size();
-    } else if (const auto *container = std::get_if<Tag::Container>(&payload)) {
-      for (const auto &element : *container) {
-        if (element.type == ElementT && std::holds_alternative<T>(element.payload)) {
-          ++count;
+  static std::size_t compoundSize(const NBT_NS Tag &tag) noexcept {
+    std::size_t size = 1;
+    if (const auto *children = std::get_if<NBT_NS Tag::Compound>(&tag.payload())) {
+      for (const auto &[childName, child] : *children) {
+        if (child.type() != NBT_NS Type::End) {
+          size += tagSize(tag, child, childName);
         }
       }
     }
-    if (count > utils::MAX_COUNT) {
-      return utils::MAX_COUNT;
-    }
-    return 4 + (count * sizeof(T));
-  }
-#endif
-
-  static std::size_t compoundSize(const Tag::Container &values) noexcept {
-    std::size_t size = 1;
-    for (const auto &element : values) {
-#ifdef NBT_STRICT_MODE
-      if (element.type == Type::End) {
-        break;
-      }
-#else
-      if (element.type == Type::End || !payloadMatches(element)) {
-        continue;
-      }
-#endif
-      const auto elementSize = encodedSize(element, true);
-      if (elementSize > utils::MAX_BYTES - size) {
-        return utils::MAX_BYTES;
-      }
-      size += elementSize;
-    }
     return size;
+  }
+
+  template <typename T>
+  static T scalarOrDefault(const NBT_NS Tag &tag) {
+    const auto *value = std::get_if<T>(&tag.payload());
+    return value == nullptr ? T{} : *value;
+  }
+
+  template <typename T>
+  static const NBT_NS Tag::Array<T> &listValues(const NBT_NS Tag &tag) noexcept {
+    if (const auto *list = std::get_if<NBT_NS Tag::List>(&tag.payload())) {
+      if (const auto *values = std::get_if<NBT_NS Tag::Array<T>>(list)) {
+        return *values;
+      }
+    }
+    static const NBT_NS Tag::Array<T> empty;
+    return empty;
+  }
+
+  template <typename T>
+  static const NBT_NS Tag::Array<T> &arrayValues(const NBT_NS Tag &tag) noexcept {
+    if (const auto *values = std::get_if<NBT_NS Tag::Array<T>>(&tag.payload())) {
+      return *values;
+    }
+    static const NBT_NS Tag::Array<T> empty;
+    return empty;
   }
 
   static void appendString(BufferWriter &output, std::string_view value) {
-    if (value.size() > nbt::utils::MAX_STR_SIZE) {
+    if (value.size() > NBT_NS utils::MAX_STR_SIZE) {
       throw std::length_error("NBT string exceeds 65535 bytes");
     }
     output.writeBE(static_cast<std::uint16_t>(value.size()));
@@ -1702,253 +2040,153 @@ private:
   }
 
   static void appendLength(BufferWriter &output, std::size_t size) {
-    if (size > nbt::utils::MAX_COUNT) {
+    if (size > NBT_NS utils::MAX_COUNT) {
       throw std::length_error("NBT container is too large");
     }
     output.writeBE(static_cast<std::uint32_t>(size));
   }
 
-#ifndef NBT_STRICT_MODE
-  /**
-   * @brief Whether the payload variant matches the declared Tag::type (level 1).
-   *
-   * Nested container contents are re-validated when their own encoding branch runs.
-   * Used by the non-strict encoding paths to ignore invalid values consistently in
-   * both size computation and writing.
-   */
-  [[nodiscard]] static bool payloadMatches(const Tag &value) noexcept {
-    switch (value.type) {
-    case Type::Byte:
-      return std::holds_alternative<Tag::Byte>(value.payload);
-    case Type::Short:
-      return std::holds_alternative<Tag::Short>(value.payload);
-    case Type::Int:
-      return std::holds_alternative<Tag::Int>(value.payload);
-    case Type::Long:
-      return std::holds_alternative<Tag::Long>(value.payload);
-    case Type::Float:
-      return std::holds_alternative<Tag::Float>(value.payload);
-    case Type::Double:
-      return std::holds_alternative<Tag::Double>(value.payload);
-    case Type::String:
-      return std::holds_alternative<Tag::String>(value.payload);
-    case Type::ByteArray:
-      return std::holds_alternative<Tag::ByteArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
-    case Type::IntArray:
-      return std::holds_alternative<Tag::IntArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
-    case Type::LongArray:
-      return std::holds_alternative<Tag::LongArray>(value.payload) || std::holds_alternative<Tag::Container>(value.payload);
-    case Type::List:
-    case Type::Compound:
-      return std::holds_alternative<Tag::Container>(value.payload);
-    case Type::End:
-      return false;
-    }
-    return false;
+  [[nodiscard]] static bool checkTag(const NBT_NS Tag &value) noexcept {
+    return value.type() != NBT_NS Type::End;
   }
-#endif
 
-  static void appendTag(BufferWriter &output, const Tag &value) {
-    if (value.type == Type::End) {
+  static void appendTag(BufferWriter &output, std::string_view name, const NBT_NS Tag &value) {
+    if (value.type() == NBT_NS Type::End) {
       throw std::invalid_argument("TAG_End");
     }
-    output.put(static_cast<std::byte>(value.type));
+    output.put(static_cast<std::byte>(value.type()));
 
-    appendString(output, value.name);
+    appendString(output, name);
 
     appendPayload(output, value);
   }
 
-  static std::size_t payloadSize(const Tag &value) noexcept {
-    switch (value.type) {
-    case Type::Byte:
-      return 1;
-    case Type::Short:
-      return 2;
-    case Type::Float:
-    case Type::Int:
-      return 4;
-    case Type::Double:
-    case Type::Long:
-      return 8;
-    case Type::String:
-      return stringSize(std::get<std::string>(value.payload));
-    case Type::ByteArray:
-#ifdef NBT_STRICT_MODE
-      return arraySize(std::get<Tag::ByteArray>(value.payload));
-#else
-      return arraySize<Tag::Byte, Type::Byte>(value.payload);
-#endif
-    case Type::IntArray:
-#ifdef NBT_STRICT_MODE
-      return arraySize(std::get<Tag::IntArray>(value.payload));
-#else
-      return arraySize<Tag::Int, Type::Int>(value.payload);
-#endif
-    case Type::LongArray:
-#ifdef NBT_STRICT_MODE
-      return arraySize(std::get<Tag::LongArray>(value.payload));
-#else
-      return arraySize<Tag::Long, Type::Long>(value.payload);
-#endif
-    case Type::List:
-      return listSize(value, std::get<Tag::Container>(value.payload));
-    case Type::Compound:
-      return compoundSize(std::get<Tag::Container>(value.payload));
-    default:
-    case Type::End:
-      return 0;
+  static void appendListHeader(BufferWriter &output, NBT_NS Type elementType, std::size_t count) {
+    output.writeBE(static_cast<std::uint8_t>(count == 0 ? NBT_NS Type::End : elementType));
+    appendLength(output, count);
+  }
+
+  template <typename T>
+  static void appendScalars(BufferWriter &output, const NBT_NS Tag &value) {
+    const auto &values = listValues<T>(value);
+    appendListHeader(output, value.elementType(), values.size());
+    for (const auto &element : values) {
+      output.writeBE(element);
     }
   }
 
-  static void appendPayload(BufferWriter &output, const Tag &value) {
-    switch (value.type) {
-    case Type::Byte:
-      output.put(static_cast<std::byte>(std::get<std::int8_t>(value.payload)));
+  static void appendList(BufferWriter &output, const NBT_NS Tag &value) {
+    const NBT_NS Type elementType = value.elementType();
+    switch (elementType) {
+    case NBT_NS Type::Byte:
+      appendScalars<NBT_NS Tag::Byte>(output, value);
+      return;
+    case NBT_NS Type::Short:
+      appendScalars<NBT_NS Tag::Short>(output, value);
+      return;
+    case NBT_NS Type::Int:
+      appendScalars<NBT_NS Tag::Int>(output, value);
+      return;
+    case NBT_NS Type::Long:
+      appendScalars<NBT_NS Tag::Long>(output, value);
+      return;
+    case NBT_NS Type::Float:
+      appendScalars<NBT_NS Tag::Float>(output, value);
+      return;
+    case NBT_NS Type::Double:
+      appendScalars<NBT_NS Tag::Double>(output, value);
+      return;
+    case NBT_NS Type::String: {
+      const auto &values = listValues<NBT_NS Tag::String>(value);
+      appendListHeader(output, NBT_NS Type::String, values.size());
+      for (const auto &element : values) {
+        appendString(output, element);
+      }
+      return;
+    }
+    case NBT_NS Type::ByteArray:
+    case NBT_NS Type::IntArray:
+    case NBT_NS Type::LongArray:
+    case NBT_NS Type::List:
+    case NBT_NS Type::Compound: {
+      const auto &values = listValues<NBT_NS Tag>(value);
+      const auto count = static_cast<std::size_t>(std::count_if(values.begin(), values.end(), [elementType](const NBT_NS Tag &element) {
+        return element.type() == elementType;
+      }));
+      appendListHeader(output, elementType, count);
+      for (const auto &element : values) {
+        if (element.type() == elementType) {
+          appendPayload(output, element);
+        }
+      }
+      return;
+    }
+    case NBT_NS Type::End:
+    default:
+      appendListHeader(output, NBT_NS Type::End, 0);
+      return;
+    }
+  }
+
+  static void appendPayload(BufferWriter &output, const NBT_NS Tag &value) {
+    switch (value.type()) {
+    case NBT_NS Type::Byte:
+      output.put(static_cast<std::byte>(scalarOrDefault<NBT_NS Tag::Byte>(value)));
       break;
-    case Type::Short:
-      output.writeBE(std::get<std::int16_t>(value.payload));
+    case NBT_NS Type::Short:
+      output.writeBE(scalarOrDefault<NBT_NS Tag::Short>(value));
       break;
-    case Type::Int:
-      output.writeBE(std::get<std::int32_t>(value.payload));
+    case NBT_NS Type::Int:
+      output.writeBE(scalarOrDefault<NBT_NS Tag::Int>(value));
       break;
-    case Type::Long:
-      output.writeBE(std::get<std::int64_t>(value.payload));
+    case NBT_NS Type::Long:
+      output.writeBE(scalarOrDefault<NBT_NS Tag::Long>(value));
       break;
-    case Type::Float:
-      output.writeBE(std::get<float>(value.payload));
+    case NBT_NS Type::Float:
+      output.writeBE(scalarOrDefault<NBT_NS Tag::Float>(value));
       break;
-    case Type::Double:
-      output.writeBE(std::get<double>(value.payload));
+    case NBT_NS Type::Double:
+      output.writeBE(scalarOrDefault<NBT_NS Tag::Double>(value));
       break;
-    case Type::String:
-      appendString(output, std::get<std::string>(value.payload));
+    case NBT_NS Type::String:
+      appendString(output, scalarOrDefault<NBT_NS Tag::String>(value));
       break;
-    case Type::ByteArray: {
-#ifdef NBT_STRICT_MODE
-      const auto &values = std::get<Tag::ByteArray>(value.payload);
+    case NBT_NS Type::ByteArray: {
+      const auto &values = arrayValues<NBT_NS Tag::Byte>(value);
       appendLength(output, values.size());
       output.write(values.data(), values.size());
-#else
-      if (const auto *values = std::get_if<Tag::ByteArray>(&value.payload)) {
-        appendLength(output, values->size());
-        output.write(values->data(), values->size());
-      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
-        nbt::Tag::ByteArray converted;
-        converted.reserve(tagValues->size());
-        for (const auto &element : *tagValues) {
-          if (const auto *scalar = std::get_if<nbt::Tag::Byte>(&element.payload); element.type == Type::Byte && scalar != nullptr) {
-            converted.push_back(*scalar);
-          }
-        }
-        appendLength(output, converted.size());
-        output.write(converted.data(), converted.size());
-      } else {
-        appendLength(output, 0);
-      }
-
-#endif
       break;
     }
-    case Type::IntArray: {
-#ifdef NBT_STRICT_MODE
-      const auto &values = std::get<Tag::IntArray>(value.payload);
+    case NBT_NS Type::IntArray: {
+      const auto &values = arrayValues<NBT_NS Tag::Int>(value);
       appendLength(output, values.size());
       for (const auto &element : values) {
         output.writeBE(element);
       }
-#else
-      if (const auto *values = std::get_if<Tag::IntArray>(&value.payload)) {
-        appendLength(output, values->size());
-        for (const auto &element : *values) {
-          output.writeBE(element);
-        }
-      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
-        nbt::Tag::IntArray converted;
-        converted.reserve(tagValues->size());
-        for (const auto &element : *tagValues) {
-          if (const auto *scalar = std::get_if<nbt::Tag::Int>(&element.payload); element.type == Type::Int && scalar != nullptr) {
-            converted.push_back(*scalar);
-          }
-        }
-        appendLength(output, converted.size());
-        for (const auto &element : converted) {
-          output.writeBE(element);
-        }
-      } else {
-        appendLength(output, 0);
-      }
-#endif
       break;
     }
-    case Type::LongArray: {
-#ifdef NBT_STRICT_MODE
-      const auto &values = std::get<Tag::LongArray>(value.payload);
+    case NBT_NS Type::LongArray: {
+      const auto &values = arrayValues<NBT_NS Tag::Long>(value);
       appendLength(output, values.size());
       for (const auto &element : values) {
         output.writeBE(element);
       }
-#else
-      if (const auto *values = std::get_if<Tag::LongArray>(&value.payload)) {
-        appendLength(output, values->size());
-        for (const auto &element : *values) {
-          output.writeBE(element);
-        }
-      } else if (const auto *tagValues = std::get_if<Tag::Container>(&value.payload)) {
-        nbt::Tag::LongArray converted;
-        converted.reserve(tagValues->size());
-        for (const auto &element : *tagValues) {
-          if (const auto *scalar = std::get_if<nbt::Tag::Long>(&element.payload); element.type == Type::Long && scalar != nullptr) {
-            converted.push_back(*scalar);
+      break;
+    }
+    case NBT_NS Type::List:
+      appendList(output, value);
+      break;
+    case NBT_NS Type::Compound:
+      if (const auto *children = std::get_if<NBT_NS Tag::Compound>(&value.payload())) {
+        for (const auto &[childName, child] : *children) {
+          if (checkTag(child)) {
+            appendTag(output, childName, child);
           }
         }
-        appendLength(output, converted.size());
-        for (const auto &element : converted) {
-          output.writeBE(element);
-        }
-      } else {
-        appendLength(output, 0);
-      }
-#endif
-      break;
-    }
-    case Type::List: {
-#ifdef NBT_STRICT_MODE
-      const auto &values = std::get<Tag::Container>(value.payload);
-#else
-      const auto &listValue = std::get<Tag::Container>(value.payload);
-      nbt::Tag::Container values;
-      values.reserve(listValue.size());
-      for (const auto &element : listValue) {
-        if (element.type == value.elementType && payloadMatches(element)) {
-          values.push_back(element);
-        }
-      }
-#endif
-      if (values.empty()) {
-        output.writeBE(static_cast<std::uint8_t>(nbt::Type::End));
-        appendLength(output, 0);
-      } else {
-        output.writeBE(static_cast<std::uint8_t>(value.elementType));
-        appendLength(output, values.size());
-      }
-      for (const auto &element : values) {
-        appendPayload(output, element);
-      }
-      break;
-    }
-    case Type::Compound:
-      for (const auto &child : std::get<Tag::Container>(value.payload)) {
-#ifndef NBT_STRICT_MODE
-        if (child.type == Type::End || !payloadMatches(child)) {
-          continue;
-        }
-#endif
-        appendTag(output, child);
       }
       output.put(std::byte{0});
       break;
-    case Type::End:
+    case NBT_NS Type::End:
       break;
     }
   }
@@ -1971,127 +2209,348 @@ private:
     }
   }
 
-  BufferT data_;
-  Status status_{Status::Empty};
+  NBT_NS Buffer data_;
+  NBT_NS Status status_{NBT_NS Status::Empty};
 
-  std::optional<Tag> rootValue_;
-  std::vector<Node> nodes_;
+  std::optional<NBT_NS Tag> rootValue_;
+  std::vector<NBT_NS Node> nodes_;
 
   std::size_t position_{0};
   std::size_t next_node_{0};
 
-  /// Options
   std::size_t maxDepth_{512};
   std::size_t maxContainerElements_{static_cast<std::size_t>(16U * 1024U * 1024U)};
   std::size_t maxTotalNodes_{static_cast<std::size_t>(64U * 1024U * 1024U)};
   std::size_t maxInputBytes_{static_cast<std::size_t>(1024U * 1024U * 1024U)};
+  bool named_{false};
+
+  // Lifetime
+  std::shared_ptr<Lifetime> lifetime_ = std::make_shared<Lifetime>(this);
 };
 
-/**
- * @brief Tag construction literals and the `name | value` naming helper.
- *
- * Numeric suffixes produce typed payloads (`_tb`, `_ts`, `_ti`, `_tl`, `_tf`, `_td`);
- * `_tgs`/`_ts` produce string tags/payloads. `"name" | value` assigns a name to a Tag.
- */
-namespace tag_literals {
+namespace utils {
+template <>
+struct BitsType<2> {
+  using bits = std::uint16_t;
+};
 
-/**
- * @brief TAG_String literal producing an owning Tag.
- */
-[[nodiscard]] constexpr Tag operator""_tgs(const char *str, size_t len) {
-  return Tag::String(str, len);
-}
+template <>
+struct BitsType<4> {
+  using bits = std::uint32_t;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgb(unsigned long long value) noexcept {
-  return Tag::Byte(value);
-}
+template <>
+struct BitsType<8> {
+  using bits = std::uint64_t;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgs(unsigned long long value) noexcept {
-  return Tag::Short(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Byte> {
+  using value_t = NBT_NS Tag::Byte;
+  using element_t = NBT_NS Tag::Byte;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 1;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgi(unsigned long long value) noexcept {
-  return Tag::Int(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Short> {
+  using value_t = NBT_NS Tag::Short;
+  using element_t = NBT_NS Tag::Short;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 2;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgl(unsigned long long value) noexcept {
-  return Tag::Long(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Int> {
+  using value_t = NBT_NS Tag::Int;
+  using element_t = NBT_NS Tag::Int;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 4;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgf(long double value) noexcept {
-  return Tag::Float(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Long> {
+  using value_t = NBT_NS Tag::Long;
+  using element_t = NBT_NS Tag::Long;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 8;
+};
 
-[[nodiscard]] constexpr Tag operator""_tgd(long double value) noexcept {
-  return Tag::Double(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Float> {
+  using value_t = NBT_NS Tag::Float;
+  using element_t = NBT_NS Tag::Float;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 4;
+};
 
-[[nodiscard]] constexpr Tag::String operator""_ts(const char *str, size_t len) {
-  return Tag::String(str, len);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Double> {
+  using value_t = NBT_NS Tag::Double;
+  using element_t = NBT_NS Tag::Double;
+  static constexpr bool isScalar = true;
+  static constexpr bool isArray = false;
+  static constexpr std::size_t fixedSize = 8;
+};
 
-[[nodiscard]] constexpr Tag::Byte operator""_tb(unsigned long long value) noexcept {
-  return Tag::Byte(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::String> {
+  using value_t = NBT_NS Tag::String;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = false;
+};
 
-[[nodiscard]] constexpr Tag::Short operator""_ts(unsigned long long value) noexcept {
-  return Tag::Short(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::ByteArray> {
+  using value_t = NBT_NS Tag::ByteArray;
+  using element_t = NBT_NS Tag::Byte;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = true;
+};
 
-[[nodiscard]] constexpr Tag::Int operator""_ti(unsigned long long value) noexcept {
-  return Tag::Int(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::IntArray> {
+  using value_t = NBT_NS Tag::IntArray;
+  using element_t = NBT_NS Tag::Int;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = true;
+};
 
-[[nodiscard]] constexpr Tag::Long operator""_tl(unsigned long long value) noexcept {
-  return Tag::Long(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::LongArray> {
+  using value_t = NBT_NS Tag::LongArray;
+  using element_t = NBT_NS Tag::Long;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = true;
+};
 
-[[nodiscard]] constexpr Tag::Float operator""_tf(long double value) noexcept {
-  return Tag::Float(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::List> {
+  using value_t = NBT_NS Tag::List;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = false;
+};
 
-[[nodiscard]] constexpr Tag::Double operator""_td(long double value) noexcept {
-  return Tag::Double(value);
-}
+template <>
+struct TypeTraits<NBT_NS Type::Compound> {
+  using value_t = NBT_NS Tag::Compound;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = false;
+};
 
-/**
- * @brief Assign a name to an existing tag, returning the same reference.
- */
-template <typename String>
-  requires std::is_constructible_v<std::string, String &&>
-[[nodiscard]] constexpr Tag &operator|(String &&name, Tag &value) {
-  value.name = std::string{std::forward<String>(name)};
-  return value;
-}
+template <>
+struct TypeTraits<NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::End;
+  static constexpr bool isScalar = false;
+  static constexpr bool isArray = false;
+};
 
-/**
- * @brief Assign a name to a temporary tag.
- */
-template <typename String>
-  requires std::is_constructible_v<std::string, String &&>
-[[nodiscard]] constexpr Tag operator|(String &&name, Tag &&value) {
-  value.name = std::string{std::forward<String>(name)};
-  return std::move(value);
-}
+template <typename T>
+struct TypeOf {
+  static constexpr Type value = NBT_NS Type::End;
+};
 
-/**
- * @brief Build a named tag from a string-like name and a Tag-convertible value.
- */
-template <typename String, typename Value>
-  requires(std::is_constructible_v<std::string, String &&> && std::is_convertible_v<Value &&, Tag> && !std::is_same_v<std::remove_cvref_t<Value>, Tag>)
-[[nodiscard]] constexpr Tag operator|(String &&name, Value &&value) {
-  return Tag(std::forward<String>(name), std::forward<Value>(value));
-}
+template <>
+struct TypeOf<NBT_NS Tag::End> {
+  static constexpr Type value = NBT_NS Type::End;
+};
 
-} // namespace tag_literals
+template <>
+struct TypeOf<NBT_NS Tag::Byte> {
+  static constexpr Type value = NBT_NS Type::Byte;
+};
 
-/**
- * @brief Default document type using nbt::Buffer storage.
- */
-using Nbt = NbtParser<nbt::Buffer>;
+template <>
+struct TypeOf<NBT_NS Tag::Short> {
+  static constexpr Type value = NBT_NS Type::Short;
+};
 
-/**
- * @brief Alias for the lazy non-owning view exposed by nbt::Nbt.
- */
-using NbtView = Nbt::View;
+template <>
+struct TypeOf<NBT_NS Tag::Int> {
+  static constexpr Type value = NBT_NS Type::Int;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::Long> {
+  static constexpr Type value = NBT_NS Type::Long;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::Float> {
+  static constexpr Type value = NBT_NS Type::Float;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::Double> {
+  static constexpr Type value = NBT_NS Type::Double;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::String> {
+  static constexpr Type value = NBT_NS Type::String;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::ByteArray> {
+  static constexpr Type value = NBT_NS Type::ByteArray;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::IntArray> {
+  static constexpr Type value = NBT_NS Type::IntArray;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::LongArray> {
+  static constexpr Type value = NBT_NS Type::LongArray;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::List> {
+  static constexpr Type value = NBT_NS Type::List;
+};
+
+template <>
+struct TypeOf<NBT_NS Tag::Compound> {
+  static constexpr Type value = NBT_NS Type::Compound;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Byte, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Byte;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Short, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Short;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Int, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Int;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Long, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Long;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Float, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Float;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Double, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Double;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::String, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::String;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Byte> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Byte;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Short> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Short;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Int> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Int;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Long> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Long;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Float> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Float;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Double> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Double;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::List> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::List;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Compound> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::Compound;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::ByteArray> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::ByteArray;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::IntArray> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::IntArray;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::LongArray> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::LongArray;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::Compound, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::Compound;
+  using element_t = NBT_NS Tag::End;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::ByteArray, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::ByteArray;
+  using element_t = NBT_NS Tag::Byte;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::IntArray, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::IntArray;
+  using element_t = NBT_NS Tag::Int;
+};
+
+template <>
+struct UnderlyingType<NBT_NS Type::LongArray, NBT_NS Type::End> {
+  using value_t = NBT_NS Tag::LongArray;
+  using element_t = NBT_NS Tag::Long;
+};
+} // namespace utils
+
 } // namespace nbt

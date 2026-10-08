@@ -71,7 +71,7 @@ if(NBT_CPP_BUILD_TESTS)
 endif()
 
 if(NBT_CPP_BUILD_EXAMPLES)
-    foreach(example IN ITEMS lazyNbt bufferChain buildNbt networkNbt queryViews)
+    foreach(example IN ITEMS bufferChain buildNbt networkNbt)
         add_executable(nbt-example-${example} examples/${example}.cpp)
         target_link_libraries(nbt-example-${example} PRIVATE nbt::nbt)
     endforeach()

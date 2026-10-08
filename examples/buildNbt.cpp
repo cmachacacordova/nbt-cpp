@@ -2,12 +2,12 @@
 
 int main() {
   using NBTTag = nbt::Tag;
-  using Nbt = nbt::Nbt;
+  using NbtParser = nbt::NbtParser;
   using namespace nbt::tag_literals;
   using namespace std::string_literals;
 
-  NBTTag tag = "name" | "Alex"_ts;
+  auto tag = "name"s | "Alex"_ts;
 
-  Nbt document(NBTTag("root", std::vector<NBTTag>{"answer"s | 42_ti, tag}));
-  return document.encode().empty() ? 1 : 0;
+  NbtParser document(NBTTag(NBTTag::Compound{tag, {"answer", 42_ti}}));
+  return document.encode("root").empty() ? 1 : 0;
 }

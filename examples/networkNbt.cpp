@@ -3,15 +3,15 @@
 int main() {
   using namespace nbt;
   using namespace nbt::tag_literals;
-  Nbt source(Tag("", std::vector<Tag>{Tag("answer", 42_ti)}));
-  const auto bytes = source.encode(false);
+  NbtParser source(Tag(Tag::Compound{{"answer", Tag(42_ti)}}));
+  const auto bytes = source.encode(std::nullopt);
   Options options;
   options.named = false;
-  Nbt decoded = Nbt::parse(bytes, options);
+  NbtParser decoded = NbtParser::parse(bytes, options);
   if (decoded.status() != Status::Complete) {
     return 1;
   }
-  return decoded.root().find("answer").as<Type::Int>() == 42 ? 0 : 1;
-
-  return 0;
+  auto tag = decoded.readTag();
+  const auto *answer = tag.find("answer");
+  return answer != nullptr && std::get<Tag::Int>(answer->payload()) == 42 ? 0 : 1;
 }
