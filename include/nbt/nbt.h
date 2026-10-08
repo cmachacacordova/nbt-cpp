@@ -554,26 +554,6 @@ template <typename Value>
 
 } // namespace tag_literals
 
-/** @brief Structural index entry: byte offsets and child/sibling links. */
-struct Node {
-  static constexpr std::uint32_t END = (std::numeric_limits<std::uint32_t>::max)();
-
-  std::uint32_t begin{NBT_NS Node::END};   ///< Offset of the type byte (named) or payload (list element).
-  std::uint32_t end{NBT_NS Node::END};     ///< One past the last byte of this tag.
-  std::uint32_t payload{NBT_NS Node::END}; ///< Offset of the decodable payload.
-
-  std::uint32_t firstChild{NBT_NS utils::NO_NODE};  ///< Index of the first child node.
-  std::uint32_t nextSibling{NBT_NS utils::NO_NODE}; ///< Index of the next sibling node.
-
-  std::uint32_t childCount{0}; ///< Number of direct children.
-
-  NBT_NS Type type{NBT_NS Type::End};        ///< NBT type of the node.
-  NBT_NS Type elementType{NBT_NS Type::End}; ///< List element type when type is Type::List.
-
-  explicit Node(std::uint32_t begin) : begin(begin) {
-  }
-};
-
 class NbtUtilities;
 
 /**
@@ -589,6 +569,26 @@ class NbtParser final {
 private:
   struct Lifetime {
     const NbtParser *document;
+  };
+
+  /** @brief Structural index entry: byte offsets and child/sibling links. */
+  struct Node {
+    static constexpr std::uint32_t END = (std::numeric_limits<std::uint32_t>::max)();
+
+    std::uint32_t begin{Node::END};   ///< Offset of the type byte (named) or payload (list element).
+    std::uint32_t end{Node::END};     ///< One past the last byte of this tag.
+    std::uint32_t payload{Node::END}; ///< Offset of the decodable payload.
+
+    std::uint32_t firstChild{NBT_NS utils::NO_NODE};  ///< Index of the first child node.
+    std::uint32_t nextSibling{NBT_NS utils::NO_NODE}; ///< Index of the next sibling node.
+
+    std::uint32_t childCount{0}; ///< Number of direct children.
+
+    NBT_NS Type type{NBT_NS Type::End};        ///< NBT type of the node.
+    NBT_NS Type elementType{NBT_NS Type::End}; ///< List element type when type is Type::List.
+
+    explicit Node(std::uint32_t begin) : begin(begin) {
+    }
   };
 
 public:
@@ -927,14 +927,14 @@ public:
     TagView(const NBT_NS NbtParser *owner, std::uint32_t index, std::uint32_t position) : owner_(owner->lifetime_), index_(index), position_(position), accessType_(NBT_NS NbtParser::TagView::AccessType::SubItem) {
     }
 
-    [[nodiscard]] const NBT_NS Node &node(const Lifetime &owner) const {
+    [[nodiscard]] const Node &node(const Lifetime &owner) const {
       if (owner == nullptr || index_ >= owner->document->nodes_.size()) {
         throw std::logic_error("invalid NBT view");
       }
       return owner->document->nodes_[index_];
     }
 
-    [[nodiscard]] const NBT_NS Node &node(const Lifetime &owner, std::uint32_t index) const {
+    [[nodiscard]] const Node &node(const Lifetime &owner, std::uint32_t index) const {
       if (owner == nullptr || index >= owner->document->nodes_.size()) {
         throw std::logic_error("invalid NBT view");
       }
@@ -1207,7 +1207,7 @@ public:
 
       output.postallocate(appender.written());
     } else if (!nodes_.empty()) {
-      const NBT_NS Node &rootNode = nodes_[0];
+      const Node &rootNode = nodes_[0];
       if (rootNode.type == NBT_NS Type::End) {
         throw std::invalid_argument("TAG_End");
       }
@@ -1342,8 +1342,8 @@ private:
   std::uint32_t parseNode(std::size_t depth, std::uint32_t previousSibling, bool named = true, NBT_NS Type declared = NBT_NS Type::End) {
     const auto begin = position_;
     const auto nodeIndex = beginNode(begin);
-    if (nodes_[nodeIndex].end != NBT_NS Node::END) {
-      NBT_NS Node &node = nodes_[nodeIndex];
+    if (nodes_[nodeIndex].end != Node::END) {
+      Node &node = nodes_[nodeIndex];
       position_ = node.end;
       next_node_ = node.nextSibling;
       return nodeIndex;
@@ -1364,8 +1364,8 @@ private:
     return nodeIndex;
   }
 
-  [[nodiscard]] std::string_view readName(const NBT_NS Node &value) const {
-    if (value.end == NBT_NS Node::END || value.payload <= value.begin + 3) {
+  [[nodiscard]] std::string_view readName(const Node &value) const {
+    if (value.end == Node::END || value.payload <= value.begin + 3) {
       return {};
     }
     auto position = static_cast<std::size_t>(value.begin);
@@ -1604,7 +1604,7 @@ private:
   }
 
   template <class T>
-  [[nodiscard]] T readNumber(const NBT_NS Node &node, const std::size_t relativePosition = 0) const {
+  [[nodiscard]] T readNumber(const Node &node, const std::size_t relativePosition = 0) const {
     const auto position = static_cast<std::size_t>(node.payload + (relativePosition * sizeof(T)));
     require(position, sizeof(T));
     if constexpr (sizeof(T) == 1) {
@@ -1633,7 +1633,7 @@ private:
     return text(offset + 2, size);
   }
 
-  [[nodiscard]] std::string_view readString(const NBT_NS Node &node, const std::size_t relativePosition = 0) const {
+  [[nodiscard]] std::string_view readString(const Node &node, const std::size_t relativePosition = 0) const {
     std::size_t position = node.payload;
 
     if (node.type == NBT_NS Type::List && relativePosition > 0) {
@@ -1658,7 +1658,7 @@ private:
 
   template <typename T>
     requires(NBT_NS Tag::isNBTNumber<T>)
-  [[nodiscard]] NBT_NS Tag::Array<T> readArray(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag::Array<T> readArray(const Node &node) const {
     std::size_t position = node.payload;
     const auto count = static_cast<std::size_t>(node.childCount);
     require(position, count * sizeof(T));
@@ -1674,7 +1674,7 @@ private:
     return data;
   }
 
-  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag::String> readStringList(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag::String> readStringList(const Node &node) const {
     std::size_t position = node.payload;
     const auto count = static_cast<std::size_t>(node.childCount);
     NBT_NS Tag::Array<NBT_NS Tag::String> data;
@@ -1687,7 +1687,7 @@ private:
     return data;
   }
 
-  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubList(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubList(const Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
     NBT_NS Tag::Array<NBT_NS Tag> data;
     data.reserve(count);
@@ -1700,7 +1700,7 @@ private:
     return data;
   }
 
-  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readCompoundList(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readCompoundList(const Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
     NBT_NS Tag::Array<NBT_NS Tag> data;
     data.reserve(count);
@@ -1714,7 +1714,7 @@ private:
   }
 
   template <typename T>
-  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubArray(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubArray(const Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
     NBT_NS Tag::Array<NBT_NS Tag> data;
     data.reserve(count);
@@ -1727,7 +1727,7 @@ private:
     return data;
   }
 
-  [[nodiscard]] NBT_NS Tag readList(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag readList(const Node &node) const {
     const auto type = node.elementType;
 
     NBT_NS Tag::List list;
@@ -1790,7 +1790,7 @@ private:
     return value;
   }
 
-  [[nodiscard]] NBT_NS Tag readCompound(const NBT_NS Node &node) const {
+  [[nodiscard]] NBT_NS Tag readCompound(const Node &node) const {
     NBT_NS Tag::Compound values;
     std::uint32_t childIndex = node.firstChild;
     for (std::size_t index = 0; index < node.childCount; ++index) {
@@ -2213,7 +2213,7 @@ private:
   NBT_NS Status status_{NBT_NS Status::Empty};
 
   std::optional<NBT_NS Tag> rootValue_;
-  std::vector<NBT_NS Node> nodes_;
+  std::vector<Node> nodes_;
 
   std::size_t position_{0};
   std::size_t next_node_{0};
@@ -2499,6 +2499,12 @@ struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::Double> {
 };
 
 template <>
+struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::String> {
+  using value_t = NBT_NS Tag::List;
+  using element_t = NBT_NS Tag::String;
+};
+
+template <>
 struct UnderlyingType<NBT_NS Type::List, NBT_NS Type::List> {
   using value_t = NBT_NS Tag::List;
   using element_t = NBT_NS Tag::List;
@@ -2552,5 +2558,21 @@ struct UnderlyingType<NBT_NS Type::LongArray, NBT_NS Type::End> {
   using element_t = NBT_NS Tag::Long;
 };
 } // namespace utils
+
+using TagView = NBT_NS NbtParser::TagView;
+
+using EndTag = NBT_NS Tag::End;
+using ByteTag = NBT_NS Tag::Byte;
+using ShortTag = NBT_NS Tag::Short;
+using IntTag = NBT_NS Tag::Int;
+using LongTag = NBT_NS Tag::Long;
+using FloatTag = NBT_NS Tag::Float;
+using DoubleTag = NBT_NS Tag::Double;
+using StringTag = NBT_NS Tag::String;
+using ListTag = NBT_NS Tag::List;
+using CompoundTag = NBT_NS Tag::Compound;
+using ByteArrayTag = NBT_NS Tag::ByteArray;
+using IntArrayTag = NBT_NS Tag::IntArray;
+using LongArrayTag = NBT_NS Tag::LongArray;
 
 } // namespace nbt

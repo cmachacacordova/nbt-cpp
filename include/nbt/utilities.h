@@ -368,7 +368,7 @@ private:
 
     [[nodiscard]] NBT_NS Tag readCompound(std::size_t depth) {
       expect('{');
-      NBT_NS Tag::Compound values;
+      NBT_NS CompoundTag values;
       skipWhitespace();
       if (consume('}')) {
         return NBT_NS Tag(std::move(values));
@@ -468,10 +468,10 @@ private:
 
     [[nodiscard]] NBT_NS Tag readScalar(const std::string &token) const {
       if (token == "true") {
-        return NBT_NS Tag(NBT_NS Tag::Byte{1});
+        return NBT_NS Tag(NBT_NS ByteTag{1});
       }
       if (token == "false") {
-        return NBT_NS Tag(NBT_NS Tag::Byte{0});
+        return NBT_NS Tag(NBT_NS ByteTag{0});
       }
       if (token.empty()) {
         fail("empty SNBT scalar");
@@ -577,58 +577,58 @@ private:
     }
     switch (values.front().type()) {
     case NBT_NS Type::Byte: {
-      std::vector<NBT_NS Tag::Byte> typed;
+      std::vector<NBT_NS ByteTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Byte>(tag.payload()));
+        typed.push_back(std::get<NBT_NS ByteTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::Short: {
-      std::vector<NBT_NS Tag::Short> typed;
+      std::vector<NBT_NS ShortTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Short>(tag.payload()));
+        typed.push_back(std::get<NBT_NS ShortTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::Int: {
-      std::vector<NBT_NS Tag::Int> typed;
+      std::vector<NBT_NS IntTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Int>(tag.payload()));
+        typed.push_back(std::get<NBT_NS IntTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::Long: {
-      std::vector<NBT_NS Tag::Long> typed;
+      std::vector<NBT_NS LongTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Long>(tag.payload()));
+        typed.push_back(std::get<NBT_NS LongTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::Float: {
-      std::vector<NBT_NS Tag::Float> typed;
+      std::vector<NBT_NS FloatTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Float>(tag.payload()));
+        typed.push_back(std::get<NBT_NS FloatTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::Double: {
-      std::vector<NBT_NS Tag::Double> typed;
+      std::vector<NBT_NS DoubleTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::Double>(tag.payload()));
+        typed.push_back(std::get<NBT_NS DoubleTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
     case NBT_NS Type::String: {
-      std::vector<NBT_NS Tag::String> typed;
+      std::vector<NBT_NS StringTag> typed;
       typed.reserve(values.size());
       for (const auto &tag : values) {
-        typed.push_back(std::get<NBT_NS Tag::String>(tag.payload()));
+        typed.push_back(std::get<NBT_NS StringTag>(tag.payload()));
       }
       return NBT_NS Tag(std::move(typed));
     }
@@ -682,7 +682,7 @@ private:
       std::visit(
           [&](const auto &values) {
             using V = std::decay_t<decltype(values)>;
-            if constexpr (!std::is_same_v<V, NBT_NS Tag::End>) {
+            if constexpr (!std::is_same_v<V, NBT_NS EndTag>) {
               for (const auto &item : values) {
                 if (!first) {
                   output += pretty ? ", " : ",";
@@ -690,31 +690,31 @@ private:
                 first = false;
                 if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag>>) {
                   writeSnbt(output, {}, item, pretty, depth + 1);
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Byte>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS ByteTag>>) {
                   appendNumber(output, item, "b");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Short>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS ShortTag>>) {
                   appendNumber(output, item, "s");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Int>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS IntTag>>) {
                   appendNumber(output, item, "");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Long>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS LongTag>>) {
                   appendNumber(output, item, "L");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Float>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS FloatTag>>) {
                   appendNumber(output, item, "f");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::Double>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS DoubleTag>>) {
                   appendNumber(output, item, "d");
-                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS Tag::String>>) {
+                } else if constexpr (std::is_same_v<V, NBT_NS Tag::Array<NBT_NS StringTag>>) {
                   appendQuoted(output, item);
                 }
               }
             }
           },
-          std::get<NBT_NS Tag::List>(value.payload()));
+          std::get<NBT_NS ListTag>(value.payload()));
       output.push_back(']');
       break;
     }
     case NBT_NS Type::Compound: {
       output.push_back('{');
-      const auto &values = std::get<NBT_NS Tag::Compound>(value.payload());
+      const auto &values = std::get<NBT_NS CompoundTag>(value.payload());
       std::size_t index = 0;
       for (const auto &[childName, child] : values) {
         if (index++) {
