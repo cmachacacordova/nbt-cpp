@@ -1662,39 +1662,39 @@ private:
     std::size_t position = node.payload;
     const auto count = static_cast<std::size_t>(node.childCount);
     require(position, count * sizeof(T));
+    NBT_NS Tag::Array<T> data(count);
     if constexpr (sizeof(T) == 1) {
-      NBT_NS Tag::ByteArray data(count);
       std::memcpy(data.data(), data_.data() + position, count);
-      return data;
     } else {
-      NBT_NS Tag::Array<T> data(count);
       for (std::size_t index = 0; index < count; index++) {
         data[index] = readNumber<T>(position);
         position = skip(position, sizeof(T));
       }
-      return data;
     }
+    return data;
   }
 
   [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag::String> readStringList(const NBT_NS Node &node) const {
     std::size_t position = node.payload;
     const auto count = static_cast<std::size_t>(node.childCount);
-    NBT_NS Tag::Array<NBT_NS Tag::String> data(count);
+    NBT_NS Tag::Array<NBT_NS Tag::String> data;
+    data.reserve(count);
     for (std::size_t index = 0; index < count; index++) {
       const auto str = readString(position);
       position = skip(position, 2 + str.size());
-      data[index] = str;
+      data.emplace_back(str);
     }
     return data;
   }
 
   [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubList(const NBT_NS Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
-    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    NBT_NS Tag::Array<NBT_NS Tag> data;
+    data.reserve(count);
     std::uint32_t childIndex = node.firstChild;
     for (std::size_t index = 0; index < count; index++) {
       const auto &childNode = nodes_[childIndex];
-      data[index] = readList(childNode);
+      data.push_back(readList(childNode));
       childIndex = childNode.nextSibling;
     }
     return data;
@@ -1702,11 +1702,12 @@ private:
 
   [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readCompoundList(const NBT_NS Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
-    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    NBT_NS Tag::Array<NBT_NS Tag> data;
+    data.reserve(count);
     std::uint32_t childIndex = node.firstChild;
     for (std::size_t index = 0; index < count; index++) {
       const auto &childNode = nodes_[childIndex];
-      data[index] = readCompound(childNode);
+      data.push_back(readCompound(childNode));
       childIndex = childNode.nextSibling;
     }
     return data;
@@ -1715,11 +1716,12 @@ private:
   template <typename T>
   [[nodiscard]] NBT_NS Tag::Array<NBT_NS Tag> readSubArray(const NBT_NS Node &node) const {
     const auto count = static_cast<std::size_t>(node.childCount);
-    NBT_NS Tag::Array<NBT_NS Tag> data(count);
+    NBT_NS Tag::Array<NBT_NS Tag> data;
+    data.reserve(count);
     std::uint32_t childIndex = node.firstChild;
     for (std::size_t index = 0; index < count; index++) {
       const auto &childNode = nodes_[childIndex];
-      data[index] = readArray<T>(childNode);
+      data.push_back(readArray<T>(childNode));
       childIndex = childNode.nextSibling;
     }
     return data;
