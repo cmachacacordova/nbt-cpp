@@ -27,7 +27,7 @@ jobs:
           cmake -S . -B build
           -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           -DNBT_CPP_BUILD_TESTS=ON
-          -DNBT_CPP_BUILD_EXAMPLES=OFF
+          -DNBT_CPP_BUILD_EXAMPLES=ON
 
       - name: Build
         shell: bash
@@ -59,7 +59,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DNBT_CPP_BUILD_TESTS=ON
-          -DNBT_CPP_BUILD_EXAMPLES=OFF
+          -DNBT_CPP_BUILD_EXAMPLES=ON
 
       - name: Build
         shell: bash
@@ -84,7 +84,7 @@ jobs:
         run: |
           pkg="nbt-cpp-${{ github.ref_name }}"
           mkdir -p "$pkg"
-          cp -r CMakeLists.txt cmake include src vcpkg.json LICENSE README.md docs "$pkg/"
+          cp -r CMakeLists.txt cmake include examples tests ports vcpkg.json vcpkg-configuration.json LICENSE README.md docs "$pkg/"
           tar -czf "$pkg-src.tar.gz" "$pkg"
           rm -rf "$pkg"
 
